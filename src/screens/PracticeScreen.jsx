@@ -15,7 +15,7 @@ import { romajiToHiragana } from '../utils/romanize';
 // Gap between word blocks in the conveyor (must match marginRight below)
 const INTER_WORD_GAP = 32;
 
-export default function PracticeScreen() {
+export default function PracticeScreen({ navigation }) {
     // UI toggles
     const [showRomaji, setShowRomaji] = useState(false);
 
@@ -79,7 +79,7 @@ export default function PracticeScreen() {
     const [layoutTick, setLayoutTick] = useState(0); // bump when widths change to trigger effects
 
     const onMeasureWord = (i, width) => {
-        if (wordTotalWidths.current[i] !== width) {
+        if (wordTotalWidths.current[i] == null) {
             wordTotalWidths.current[i] = width;
             setLayoutTick((t) => t + 1);
         }
@@ -124,7 +124,6 @@ export default function PracticeScreen() {
         words.slice(0, wIndex).reduce((acc, w) => acc + [...(w.reading || '')].length + 1 /* gap */, 0);
     const grossChars = grossCharsBeforeThisWord + cIndex;
     const wpm = Math.round((grossChars / 5) / minutes);
-    const accuracy = Math.max(0, Math.round(((grossChars - errors) / Math.max(1, grossChars)) * 100));
 
     // ---- LCP helper for matching kana ----
     const lcp = (a, b) => {
@@ -149,13 +148,17 @@ export default function PracticeScreen() {
     };
 
     // Center the first word once we know viewport + first word width
+    const didInitialCenter = useRef(false);
+
     useEffect(() => {
-        if (viewportW === 0) return;
-        // when widths are known, jump to offset for wIndex=0 (which is 0)
-        const initialPx = sumPrevWords(0);
-        animateToOffset(initialPx, false);
+        // center once after we have viewport and at least the first width
+        if (!didInitialCenter.current && wordTotalWidths.current[0] != null) {
+            didInitialCenter.current = true;
+            const initialPx = sumPrevWords(wIndex); // usually 0
+            animateToOffset(initialPx, false);
+        }
         // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [viewportW, layoutTick]);
+    }, [viewportW, layoutTick, wIndex]);
 
     // When the active word index changes, jump the conveyor so that new word starts under the caret
     useEffect(() => {
@@ -193,7 +196,20 @@ export default function PracticeScreen() {
             if (wIndex < words.length - 1) {
                 setWIndex(wIndex + 1);
             } else {
+                // finished the run: stop timer and go to Results
                 if (timerRef.current) clearInterval(timerRef.current);
+
+                const seconds =
+                    startTs ? Math.max(0, Math.floor((Date.now() - startTs) / 1000))
+                        : Math.floor((elapsed || 0) / 1000);
+
+                const payload = {
+                    wpm,
+                    timeSec: seconds,
+                    words: words.map(({ surface, reading }) => ({ surface, reading })),
+                };
+
+                navigation?.replace?.('Results', payload);
             }
 
             // keep focus
@@ -253,9 +269,6 @@ export default function PracticeScreen() {
                 <View style={{ flexDirection: 'row', gap: 16 }}>
                     <Text style={{ color: '#c9d1d9', fontSize: 14 }}>WPM {wpm}</Text>
                     <Text style={{ color: '#c9d1d9', fontSize: 14 }}>
-                        ACC {isNaN(accuracy) ? 100 : accuracy}%
-                    </Text>
-                    <Text style={{ color: '#c9d1d9', fontSize: 14 }}>
                         {Math.floor((elapsed || 0) / 1000)}s
                     </Text>
                 </View>
@@ -282,7 +295,7 @@ export default function PracticeScreen() {
                 </View>
 
                 {/* Conveyor: first char starts under caret via paddingLeft = viewportW/2.
-           We then translate left ONLY when the active word changes. */}
+                    We then translate left ONLY when the active word changes. */}
                 <Animated.View
                     style={{
                         flexDirection: 'row',
