@@ -1,5 +1,3 @@
-import { romajiToHiragana } from '../utils/romanize';
-
 import { useEffect, useMemo, useRef, useState } from 'react';
 import {
     View,
@@ -9,35 +7,26 @@ import {
     Animated,
     Easing,
 } from 'react-native';
+
 import FuriganaWord from '../components/FuriganaWord';
 import { getSet, listSets, DEFAULT_SET_ID } from '../data';
+import { romajiToHiragana } from '../utils/romanize';
 
-const CHAR_STEP = 24; // px per kana char to scroll (simple, smooth MVP)
+// Gap between word blocks in the conveyor (must match marginRight below)
+const INTER_WORD_GAP = 32;
 
 export default function PracticeScreen() {
     // UI toggles
     const [showRomaji, setShowRomaji] = useState(false);
 
-    // Which data set is active (modular!)
+    // Active dataset
     const [setId, setSetId] = useState(DEFAULT_SET_ID);
     const lesson = useMemo(() => getSet(setId), [setId]);
 
-    // Input state
-    const [raw, setRaw] = useState('');         // romaji buffer
-    const [typedKana, setTypedKana] = useState(''); // displayed kana
-
-    const lcp = (a, b) => {
-        const n = Math.min(a.length, b.length);
-        let i = 0;
-        while (i < n && a[i] === b[i]) i++;
-        return i;
-    };
-
-
-    // Shuffle key
+    // Shuffle seed (reshuffle per session)
     const [seed, setSeed] = useState(0);
 
-    // Shuffle items once per session for variety
+    // Words for this run (shuffled once)
     const words = useMemo(() => {
         const arr = [...lesson.items];
         for (let i = arr.length - 1; i > 0; i--) {
@@ -47,19 +36,28 @@ export default function PracticeScreen() {
         return arr;
     }, [lesson.items, seed]);
 
-    // Typing/session state
-    const [wIndex, setWIndex] = useState(0);   // active word
-    const [cIndex, setCIndex] = useState(0);   // char index within active word (reading)
-    const [typed, setTyped] = useState('');    // input buffer
+    // Session state
+    const [wIndex, setWIndex] = useState(0); // current word index
+    const [cIndex, setCIndex] = useState(0); // matched kana chars inside current reading
     const [errors, setErrors] = useState(0);
     const [startTs, setStartTs] = useState(null);
     const [elapsed, setElapsed] = useState(0);
 
-    // Refs
-    const scrollX = useRef(new Animated.Value(0)).current;
+    // IME buffers
+    const [raw, setRaw] = useState('');              // romaji user typed
+    const [typedKana, setTypedKana] = useState('');  // converted kana (display)
+
+    // Refs / timers
     const inputRef = useRef(null);
     const timerRef = useRef(null);
 
+    // Viewport width (for centering first char under caret)
+    const [viewportW, setViewportW] = useState(0);
+
+    // Conveyor scroll offset (in px). We translate the whole row by -scrollX.
+    const scrollX = useRef(new Animated.Value(0)).current;
+
+    // ---- Caret blink (fixed at screen center) ----
     const caret = useRef(new Animated.Value(1)).current;
     useEffect(() => {
         const loop = Animated.loop(
@@ -72,58 +70,102 @@ export default function PracticeScreen() {
         return () => loop.stop();
     }, []);
 
-    // Derived
+    // ---- Derived for current word ----
     const currentWord = words[wIndex] ?? words[0];
     const currentTarget = currentWord?.reading || '';
 
-    // Focus hidden input on mount
+    // ---- Per-WORD measurement for *all* words in the conveyor ----
+    const wordTotalWidths = useRef({}); // { [i]: widthPx }
+    const [layoutTick, setLayoutTick] = useState(0); // bump when widths change to trigger effects
+
+    const onMeasureWord = (i, width) => {
+        if (wordTotalWidths.current[i] !== width) {
+            wordTotalWidths.current[i] = width;
+            setLayoutTick((t) => t + 1);
+        }
+    };
+
+    // Sum widths of all previous words + gap after each previous word
+    const sumPrevWords = (idx) => {
+        let s = 0;
+        for (let k = 0; k < idx; k++) {
+            s += (wordTotalWidths.current[k] ?? 0);
+            s += INTER_WORD_GAP;
+        }
+        return s;
+    };
+
+    // ---- Focus, timers, lifecycle ----
     useEffect(() => {
         const t = setTimeout(() => inputRef.current?.focus(), 300);
         return () => clearTimeout(t);
     }, []);
 
-    // Clean up timer on unmount
     useEffect(() => {
         return () => {
             if (timerRef.current) clearInterval(timerRef.current);
         };
     }, []);
 
-    // Reset session when set changes
     useEffect(() => {
         hardReset(false);
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [setId]);
 
-    // Timer for WPM
     useEffect(() => {
         if (!startTs) return;
         timerRef.current = setInterval(() => setElapsed(Date.now() - startTs), 200);
         return () => clearInterval(timerRef.current);
     }, [startTs]);
 
-    // Smooth scroll whenever we advance characters/words
-    useEffect(() => {
-        const totalTypedChars =
-            words.slice(0, wIndex).reduce((acc, w) => acc + [...(w.reading || '')].length + 1 /* gap */, 0) +
-            cIndex;
-
-        Animated.timing(scrollX, {
-            toValue: totalTypedChars * CHAR_STEP,
-            duration: 120,
-            easing: Easing.out(Easing.cubic),
-            useNativeDriver: true,
-        }).start();
-    }, [cIndex, wIndex, words, scrollX]);
-
-    // Stats
+    // ---- Stats ----
     const minutes = Math.max(0.001, elapsed / 60000);
-    const grossChars =
-        words.slice(0, wIndex).reduce((acc, w) => acc + [...(w.reading || '')].length, 0) + cIndex;
+    const grossCharsBeforeThisWord =
+        words.slice(0, wIndex).reduce((acc, w) => acc + [...(w.reading || '')].length + 1 /* gap */, 0);
+    const grossChars = grossCharsBeforeThisWord + cIndex;
     const wpm = Math.round((grossChars / 5) / minutes);
     const accuracy = Math.max(0, Math.round(((grossChars - errors) / Math.max(1, grossChars)) * 100));
 
-    // Input handler (kana typing against reading)
+    // ---- LCP helper for matching kana ----
+    const lcp = (a, b) => {
+        const n = Math.min(a.length, b.length);
+        let i = 0;
+        while (i < n && a[i] === b[i]) i++;
+        return i;
+    };
+
+    // ---- Animate conveyor ONLY when the active word changes ----
+    const animateToOffset = (px, animated = true) => {
+        if (!animated) {
+            scrollX.setValue(px);
+            return;
+        }
+        Animated.timing(scrollX, {
+            toValue: px,
+            duration: 200,
+            easing: Easing.out(Easing.cubic),
+            useNativeDriver: true,
+        }).start();
+    };
+
+    // Center the first word once we know viewport + first word width
+    useEffect(() => {
+        if (viewportW === 0) return;
+        // when widths are known, jump to offset for wIndex=0 (which is 0)
+        const initialPx = sumPrevWords(0);
+        animateToOffset(initialPx, false);
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [viewportW, layoutTick]);
+
+    // When the active word index changes, jump the conveyor so that new word starts under the caret
+    useEffect(() => {
+        if (viewportW === 0) return;
+        const targetPx = sumPrevWords(wIndex);
+        animateToOffset(targetPx, true);
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [wIndex]);
+
+    // ---- Input handler (romaji -> kana; compare against reading) ----
     const onChange = (text) => {
         if (!startTs && text.length > 0) setStartTs(Date.now());
         setRaw(text);
@@ -136,27 +178,30 @@ export default function PracticeScreen() {
         const matched = lcp(kana, target);
         setCIndex(matched);
 
-        // rough error check
+        // rough error heuristic: user added raw chars but match didn't advance
         if (text.length > raw.length && matched <= prev && kana.length >= prev) {
             setErrors((e) => e + 1);
         }
 
-        // completed word
+        // Completed this word?
         if (kana === target && target.length > 0) {
+            // advance to next word (this triggers the per-word conveyor jump in the effect above)
             setRaw('');
             setTypedKana('');
             setCIndex(0);
+
             if (wIndex < words.length - 1) {
                 setWIndex(wIndex + 1);
             } else {
                 if (timerRef.current) clearInterval(timerRef.current);
             }
+
+            // keep focus
             setTimeout(() => inputRef.current?.focus(), 0);
         }
     };
 
-
-    // Full reset (optionally reshuffle)
+    // ---- Reset session ----
     const hardReset = (reshuffle = true) => {
         if (reshuffle) setSeed((s) => s + 1);
         setWIndex(0);
@@ -166,12 +211,17 @@ export default function PracticeScreen() {
         setErrors(0);
         setStartTs(null);
         setElapsed(0);
+        // clear measurements
+        wordTotalWidths.current = {};
+        setLayoutTick((t) => t + 1);
         scrollX.setValue(0);
-        inputRef.current?.clear();
-        setTimeout(() => inputRef.current?.focus(), 200);
+        setTimeout(() => {
+            inputRef.current?.clear?.();
+            inputRef.current?.focus?.();
+        }, 200);
     };
 
-    // Cycle through available sets quickly (tap the label)
+    // ---- Cycle through sets quickly (tap dataset label) ----
     const setsMeta = listSets();
     const cycleSet = () => {
         const i = setsMeta.findIndex((s) => s.id === setId);
@@ -211,27 +261,47 @@ export default function PracticeScreen() {
                 </View>
             </View>
 
-            {/* Conveyor viewport */}
-            <View style={{ flex: 1, justifyContent: 'center', overflow: 'hidden' }}>
+            {/* Center line + conveyor */}
+            <View
+                style={{ flex: 1, justifyContent: 'center' }}
+                onLayout={(e) => setViewportW(e.nativeEvent.layout.width)}
+            >
+                {/* Fixed caret at the exact horizontal center */}
+                <View
+                    pointerEvents="none"
+                    style={{
+                        position: 'absolute',
+                        left: viewportW / 2,
+                        top: '50%',
+                        transform: [{ translateX: -1 }, { translateY: -12 }],
+                    }}
+                >
+                    <Animated.Text style={{ color: '#c9d1d9', fontSize: 22, opacity: caret }}>
+                        │
+                    </Animated.Text>
+                </View>
+
+                {/* Conveyor: first char starts under caret via paddingLeft = viewportW/2.
+           We then translate left ONLY when the active word changes. */}
                 <Animated.View
                     style={{
                         flexDirection: 'row',
                         alignItems: 'flex-end',
+                        paddingLeft: Math.max(0, viewportW / 2),
                         transform: [{ translateX: Animated.multiply(scrollX, -1) }],
-                        paddingLeft: 80, // visual center offset
                     }}
                 >
                     {words.map((w, i) => {
                         const isActive = i === wIndex;
-                        const reading = w.reading || '';
-                        const activePrefix = isActive ? reading.slice(0, cIndex) : '';
-                        const activeChar = isActive ? reading[cIndex] : '';
-                        const activeSuffix = isActive ? reading.slice(cIndex + 1) : '';
-
                         return (
                             <View
                                 key={`${w.surface}-${i}`}
-                                style={{ flexDirection: 'column', alignItems: 'center', marginRight: 18 }}
+                                onLayout={(e) => onMeasureWord(i, e.nativeEvent.layout.width)}
+                                style={{
+                                    flexDirection: 'column',
+                                    alignItems: 'center',
+                                    marginRight: INTER_WORD_GAP, // keep in sync with INTER_WORD_GAP
+                                }}
                             >
                                 {/* Main word with furigana above */}
                                 <FuriganaWord
@@ -243,27 +313,24 @@ export default function PracticeScreen() {
 
                                 {/* Optional romaji under active word */}
                                 {isActive && showRomaji && (
-                                    <Text style={{ marginTop: 4, color: '#8b98a9', fontSize: 12 }}>{w.romaji}</Text>
+                                    <Text style={{ marginTop: 4, color: '#8b98a9', fontSize: 12 }}>
+                                        {w.romaji}
+                                    </Text>
                                 )}
 
-                                {/* Active reading progress (under word) */}
+                                {/* Typed kana preview under the active word (informational) */}
                                 {isActive && (
-                                    <View style={{ marginTop: 8, alignItems: 'center' }}>
-                                        {/* Typed text with caret only */}
-                                        <Text style={{ fontSize: 18, color: '#22c55e' }}>
-                                            {typedKana}
-                                            <Animated.Text style={{ opacity: caret }}>▌</Animated.Text>
-                                        </Text>
-                                    </View>
+                                    <Text style={{ marginTop: 8, fontSize: 18, color: '#22c55e' }}>
+                                        {typedKana}
+                                    </Text>
                                 )}
-
                             </View>
                         );
                     })}
                 </Animated.View>
             </View>
 
-            {/* Hidden input to capture keystrokes */}
+            {/* Hidden input (romaji) */}
             <TextInput
                 ref={inputRef}
                 value={raw}
@@ -306,7 +373,9 @@ export default function PracticeScreen() {
                         borderRadius: 10,
                     }}
                 >
-                    <Text style={{ color: '#c9d1d9' }}>{showRomaji ? 'romaji: on' : 'romaji: off'}</Text>
+                    <Text style={{ color: '#c9d1d9' }}>
+                        {showRomaji ? 'romaji: on' : 'romaji: off'}
+                    </Text>
                 </Pressable>
             </View>
         </Pressable>
