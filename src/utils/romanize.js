@@ -1,79 +1,98 @@
+// src/utils/romanize.js
+// Streaming ROMAJI → HIRAGANA IME built from romanization.json
+
 import TABLE from '../data/romanization.json';
 
-// Convert katakana to hiragana
-export const kataToHira = (s) =>
-    s.replace(/[\u30A1-\u30F6]/g, ch =>
-        String.fromCharCode(ch.charCodeAt(0) - 0x60)
-    );
+// ---------- Build map & helpers from your JSON ----------
+function buildFromJson() {
+    const map = Object.create(null);
+    const prefixes = new Set();
 
-// Build a map and a sorted key list for greedy parsing (longest first)
-function buildMap() {
-    const map = {};
-    const add = ([r, h]) => { map[r] = h; };
+    const add = ([roma, kana]) => {
+        if (!roma) return;
+        map[roma.toLowerCase()] = kana; // lower-case keys
+    };
 
-    TABLE.digraphs.forEach(add);
-    TABLE.syllables.forEach(add);
+    (TABLE.digraphs || []).forEach(add);
+    (TABLE.syllables || []).forEach(add);
 
-    // Return keys sorted by length desc so we can match greedily
-    const keys = Object.keys(map).sort((a, b) => b.length - a.length);
-    return { map, keys };
+    for (const key of Object.keys(map)) {
+        for (let i = 1; i < key.length; i++) {
+            prefixes.add(key.slice(0, i));
+        }
+    }
+
+    // Longest-first keys for greedy matching
+    const keysByLen = Object.keys(map).sort((a, b) => b.length - a.length);
+    return { map, prefixes, keysByLen };
 }
 
-const { map: ROMAJI_MAP, keys: ROMAJI_KEYS } = buildMap();
+const { map, prefixes, keysByLen } = buildFromJson();
+const isVowel = (c) => /[aiueo]/.test(c);
+const isLetter = (c) => /[a-z]/.test(c);
 
-/**
- * Basic romaji -> hiragana, using the external data.
- * Includes a couple of common preprocessing steps:
- * - sokuon from doubled consonants (e.g., gakkou -> がっこう)
- * - 'nn' -> ん
- */
+// Convert the *entire* romaji buffer to confirmed kana (greedy).
+// Leaves ambiguous trailing pieces (like lone 'n') un-emitted.
 export function romajiToHiragana(input) {
-    if (!input) return '';
-    let s = input.toLowerCase().trim();
-
-    // sokuon for doubled consonants except 'n' (e.g., kk -> っk)
-    s = s.replace(/([^aeiou\s])\1/g, 'っ$1');
-
-    // 'nn' -> ん (basic handling)
-    s = s.replace(/nn/g, 'ん');
-
+    const s = (input || '').toLowerCase();
     let out = '';
-    while (s.length) {
-        let matched = false;
+    let i = 0;
 
-        // Try greedy longest match from our external table
-        for (const k of ROMAJI_KEYS) {
-            if (s.startsWith(k)) {
-                out += ROMAJI_MAP[k];
-                s = s.slice(k.length);
-                matched = true;
+    while (i < s.length) {
+        // 1) "n'" -> ん
+        if (s[i] === 'n' && s[i + 1] === "'") {
+            out += 'ん';
+            i += 2;
+            continue;
+        }
+
+        // 2) double consonant (except 'n') => small tsu っ
+        if (
+            i + 1 < s.length &&
+            s[i] === s[i + 1] &&
+            isLetter(s[i]) &&
+            !isVowel(s[i]) &&
+            s[i] !== 'n'
+        ) {
+            out += 'っ';
+            i += 1; // consume one; next loop consumes the second
+            continue;
+        }
+
+        // 3) Try longest romaji chunk first
+        let matched = '';
+        for (const key of keysByLen) {
+            if (s.startsWith(key, i)) {
+                matched = key;
                 break;
             }
         }
 
-        if (!matched) {
-            // If kana slipped in, normalize & keep; else drop the char
-            const ch = s[0];
-            if (/[ぁ-ゖ]/.test(ch)) out += ch;
-            else if (/[ァ-ヶ]/.test(ch)) out += kataToHira(ch);
-            s = s.slice(1);
+        // 4) Lone 'n' rules
+        if (!matched && s[i] === 'n') {
+            const next = s[i + 1];
+            if (!next) break; // wait for more input
+            if (!isVowel(next) && next !== 'y') {
+                out += 'ん';
+                i += 1;
+                continue;
+            }
+            // next is vowel or 'y' -> it's probably na/nya..., so wait
+            break;
         }
-    }
-    return out;
-}
 
-/**
- * Normalize any user input to hiragana:
- * - Katakana -> hiragana
- * - Romaji -> hiragana (via the table)
- * - Hiragana stays
- * - Kanji stays (not converted)
- */
-export function toHiragana(input) {
-    if (!input) return '';
-    const normalizedKana = kataToHira(input);
-    if (/[a-z]/i.test(normalizedKana)) {
-        return romajiToHiragana(normalizedKana);
+        if (matched) {
+            out += map[matched];
+            i += matched.length;
+            continue;
+        }
+
+        // 5) Not a known romaji start: pass through spaces/punct, or stop on unfinished prefix
+        if (prefixes.has(s.slice(i, i + 2)) || prefixes.has(s[i])) break;
+
+        out += s[i];
+        i += 1;
     }
-    return normalizedKana;
+
+    return out;
 }

@@ -1,4 +1,4 @@
-import { toHiragana } from '../utils/romanize';
+import { romajiToHiragana } from '../utils/romanize';
 
 import { useEffect, useMemo, useRef, useState } from 'react';
 import {
@@ -21,6 +21,18 @@ export default function PracticeScreen() {
     // Which data set is active (modular!)
     const [setId, setSetId] = useState(DEFAULT_SET_ID);
     const lesson = useMemo(() => getSet(setId), [setId]);
+
+    // Input state
+    const [raw, setRaw] = useState('');         // romaji buffer
+    const [typedKana, setTypedKana] = useState(''); // displayed kana
+
+    const lcp = (a, b) => {
+        const n = Math.min(a.length, b.length);
+        let i = 0;
+        while (i < n && a[i] === b[i]) i++;
+        return i;
+    };
+
 
     // Shuffle key
     const [seed, setSeed] = useState(0);
@@ -114,49 +126,43 @@ export default function PracticeScreen() {
     // Input handler (kana typing against reading)
     const onChange = (text) => {
         if (!startTs && text.length > 0) setStartTs(Date.now());
+        setRaw(text);
+
+        const kana = romajiToHiragana(text);
+        setTypedKana(kana);
 
         const target = currentTarget;
-        const nextChar = target[cIndex];
+        const prev = cIndex;
+        const matched = lcp(kana, target);
+        setCIndex(matched);
 
-        // Delete
-        if (text.length < typed.length) {
-            setTyped(text);
-            if (cIndex > 0) setCIndex(cIndex - 1);
-            return;
-        }
-
-        // Added char
-        const added = text[text.length - 1];
-        setTyped(text);
-
-        if (!nextChar) return;
-
-        if (added === nextChar) {
-            const nextIndex = cIndex + 1;
-            setCIndex(nextIndex);
-
-            // Word complete → advance
-            if (nextIndex >= target.length) {
-                setTyped('');
-                setCIndex(0);
-                if (wIndex < words.length - 1) {
-                    setWIndex(wIndex + 1);
-                } else {
-                    // Session complete
-                    if (timerRef.current) clearInterval(timerRef.current);
-                }
-            }
-        } else {
+        // rough error check
+        if (text.length > raw.length && matched <= prev && kana.length >= prev) {
             setErrors((e) => e + 1);
         }
+
+        // completed word
+        if (kana === target && target.length > 0) {
+            setRaw('');
+            setTypedKana('');
+            setCIndex(0);
+            if (wIndex < words.length - 1) {
+                setWIndex(wIndex + 1);
+            } else {
+                if (timerRef.current) clearInterval(timerRef.current);
+            }
+            setTimeout(() => inputRef.current?.focus(), 0);
+        }
     };
+
 
     // Full reset (optionally reshuffle)
     const hardReset = (reshuffle = true) => {
         if (reshuffle) setSeed((s) => s + 1);
         setWIndex(0);
         setCIndex(0);
-        setTyped('');
+        setRaw('');
+        setTypedKana('');
         setErrors(0);
         setStartTs(null);
         setElapsed(0);
@@ -245,7 +251,7 @@ export default function PracticeScreen() {
                                     <View style={{ marginTop: 8, alignItems: 'center' }}>
                                         {/* Typed text with caret only */}
                                         <Text style={{ fontSize: 18, color: '#22c55e' }}>
-                                            {typed}
+                                            {typedKana}
                                             <Animated.Text style={{ opacity: caret }}>▌</Animated.Text>
                                         </Text>
                                     </View>
@@ -260,7 +266,7 @@ export default function PracticeScreen() {
             {/* Hidden input to capture keystrokes */}
             <TextInput
                 ref={inputRef}
-                value={typed}
+                value={raw}
                 onChangeText={onChange}
                 autoCorrect={false}
                 autoCapitalize="none"
