@@ -1,0 +1,27 @@
+{
+    "id": "EXAMPLESET",
+    "label": "Example Set (N5 sample)",
+    "description": "Short demo list for testing",
+    "items": [
+        {
+            "surface": "学生",
+            "reading": "がくせい",
+            "romaji": "gakusei"
+        },
+        {
+            "surface": "会社",
+            "reading": "かいしゃ",
+            "romaji": "kaisha"
+        },
+        {
+            "surface": "先生",
+            "reading": "せんせい",
+            "romaji": "sensei"
+        },
+        {
+            "surface": "みず",
+            "reading": "みず",
+            "romaji": "mizu"
+        }
+    ]
+}
