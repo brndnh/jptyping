@@ -88,6 +88,7 @@ export default function PracticeScreen({ navigation }) {
 
     // ui toggles
     const [showRomaji, setShowRomaji] = useState(false);
+    const [showFurigana, setShowFurigana] = useState(true);
 
     // dataset
     const [setId, setSetId] = useState(DEFAULT_SET_ID);
@@ -327,11 +328,16 @@ export default function PracticeScreen({ navigation }) {
     };
 
     // reset session
-    const hardReset = (reshuffle = true) => {
+    const hardReset = ({
+        reshuffle = false,
+        clearMeasurements = false,
+        resetConveyor = false,
+    } = {}) => {
         if (timerRef.current) clearInterval(timerRef.current);
         endTsRef.current = null;
 
         if (reshuffle) setSeed((s) => s + 1);
+
         setWIndex(0);
         setCIndex(0);
         setRaw('');
@@ -339,13 +345,27 @@ export default function PracticeScreen({ navigation }) {
         setErrors(0);
         setStartTs(null);
         setElapsed(0);
-        wordTotalWidths.current = {};
-        setLayoutTick((t) => t + 1);
-        scrollX.setValue(0);
+
+        if (clearMeasurements) {
+            wordTotalWidths.current = {};
+            setLayoutTick((t) => t + 1);
+        }
+
+        // important: do NOT snap to 0 unless we explicitly want to
+        if (resetConveyor) {
+            // if we already have a measurement for word 0 and viewport, center immediately
+            if (viewportW && wordTotalWidths.current[0] != null) {
+                scrollX.setValue(computeCenterOffset(0));
+            } else {
+                // otherwise leave as-is; centering effect will run after measure
+                // scrollX.setValue(0); // avoid snapping left
+            }
+        }
+
         setTimeout(() => {
             inputRef.current?.clear?.();
             inputRef.current?.focus?.();
-        }, 200);
+        }, 0);
     };
 
     // cycle sets
@@ -392,7 +412,8 @@ export default function PracticeScreen({ navigation }) {
                     <View style={styles.topBar}>
                         <Pressable onPress={cycleSet}>
                             <Text style={styles.topLabel}>
-                                {lesson.label} • {showRomaji ? 'romaji aid' : 'hiragana/kanji'}
+                                {lesson.label}
+                                {/* • {showRomaji ? 'romaji aid' : 'hiragana/kanji'} */}
                             </Text>
                         </Pressable>
 
@@ -401,7 +422,7 @@ export default function PracticeScreen({ navigation }) {
                             <Text style={styles.meter}>
                                 {testMode === 'time'
                                     ? `⏱ ${remainingSec ?? Math.floor((elapsed || 0) / 1000)}s`
-                                    : `🔢 ${wordsProgress}`}
+                                    : `${wordsProgress}`}
                             </Text>
                         </View>
                     </View>
@@ -470,10 +491,11 @@ export default function PracticeScreen({ navigation }) {
                                     >
                                         <FuriganaWord
                                             surface={w.surface}
-                                            reading={w.reading}
+                                            reading={showFurigana ? w.reading : ''}
                                             active={isActive}
                                             fontSize={FONT_SIZES.display}
                                         />
+
 
                                         {isActive && showRomaji && (
                                             <Text style={styles.romaji}>{w.romaji}</Text>
@@ -506,10 +528,20 @@ export default function PracticeScreen({ navigation }) {
                         <Pressable onPress={() => hardReset(true)} style={styles.button}>
                             <Text style={styles.buttonText}>restart</Text>
                         </Pressable>
-                        <Pressable onPress={() => setShowRomaji((s) => !s)} style={styles.button}>
-                            <Text style={styles.buttonText}>{showRomaji ? 'romaji: on' : 'romaji: off'}</Text>
-                        </Pressable>
+
+                        <View style={{ flexDirection: 'row' }}>
+                            <Pressable onPress={() => setShowRomaji((s) => !s)} style={styles.button}>
+                                <Text style={styles.buttonText}>{showRomaji ? 'romaji: on' : 'romaji: off'}</Text>
+                            </Pressable>
+                            <Pressable
+                                onPress={() => setShowFurigana((s) => !s)}
+                                style={[styles.button, { marginLeft: 10 }]}  // small gap, preserves overall spacing
+                            >
+                                <Text style={styles.buttonText}>{showFurigana ? 'furigana: on' : 'furigana: off'}</Text>
+                            </Pressable>
+                        </View>
                     </View>
+
                 </Pressable>
             </ScrollView>
         </KeyboardAvoidingView>

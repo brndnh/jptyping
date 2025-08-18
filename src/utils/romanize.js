@@ -1,6 +1,12 @@
-// src/utils/romanize.js
+/**
+ * Convert romaji -> hiragana.
+ * Handles:
+ *  - digraphs (kya/sha/cho/etc)
+ *  - aliases (shi/si, chi/ti, tsu/tu, fu/hu, ji/zi/di)
+ *  - sokuon っ for double consonants (kk, tta…)
+ *  - syllabic ん rules, including the `n + y` disambiguation after a vowel (きんよう OK)
+ */
 
-// --- master map ---
 // includes common aliases (shi/si, chi/ti, tsu/tu, fu/hu, ji/zi/di, jya/ja …)
 const ROMAJI_TO_HIRA = {
     // vowels
@@ -72,14 +78,6 @@ const ROMAJI_TO_HIRA = {
 // helper
 const isVowel = (ch) => ch === 'a' || ch === 'i' || ch === 'u' || ch === 'e' || ch === 'o';
 
-/**
- * Convert romaji -> hiragana.
- * Handles:
- *  - digraphs (kya/sha/cho/etc)
- *  - aliases (shi/si, chi/ti, tsu/tu, fu/hu, ji/zi/di)
- *  - sokuon っ for double consonants (kk, tta…)
- *  - syllabic ん rules, including the `n + y` disambiguation after a vowel (きんよう OK)
- */
 export function romajiToHiragana(input) {
     const s = (input || '').toLowerCase();
 
