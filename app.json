@@ -1,6 +1,6 @@
 {
   "expo": {
-    "name": "jptyping",
+    "name": "JP Typing Practice",
     "slug": "jptyping",
     "version": "1.0.0",
     "orientation": "portrait",
@@ -12,7 +12,6 @@
       "resizeMode": "contain",
       "backgroundColor": "#ffffff"
     },
-    
     "ios": {
       "supportsTablet": true
     },

@@ -1,9 +1,8 @@
-// Static registry so Metro bundles the JSONs.
 export const SETS = {
-    EXAMPLESET: require('./EXAMPLESET.json'),
+    mainSet: require('./N5Set.json'),
 };
 
-export const DEFAULT_SET_ID = 'EXAMPLESET';
+export const DEFAULT_SET_ID = 'mainSet';
 
 export function listSets() {
     return Object.values(SETS).map(s => ({

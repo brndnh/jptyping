@@ -286,19 +286,38 @@ export default function PracticeScreen({ navigation }) {
         }
     };
 
+    // helper: gross chars typed up to "now" (completed words + current match)
+    const grossCharsUpToNow = () => {
+        const before = words.slice(0, wIndex)
+            .reduce((acc, w) => acc + [...(w.reading || '')].length + 1 /* gap */, 0);
+        return before + cIndex;
+    };
+
     // finish run
     const finishRun = () => {
         if (timerRef.current) clearInterval(timerRef.current);
-        const seconds = startTs
-            ? Math.max(0, Math.floor((Date.now() - startTs) / 1000))
-            : Math.floor((elapsed || 0) / 1000);
+
+        // compute precise elapsed for final wpm (don't rely on state that may be stale)
+        const finalMs =
+            testMode === 'time'
+                ? durationSec * 1000
+                : (startTs ? Math.max(0, Date.now() - startTs) : (elapsed || 0));
+
+        // clamp to at least 1s to avoid insane spikes from ~0 minutes
+        const finalMinutes = Math.max(1 / 60, finalMs / 60000);
+        const finalGross = grossCharsUpToNow();
+        const wpmFinal = Math.round((finalGross / 5) / finalMinutes);
+
+        const seconds = Math.floor(finalMs / 1000);
 
         const payload = {
             mode: testMode,
             source,
             durationSec: testMode === 'time' ? durationSec : undefined,
-            targetWords: testMode === 'words' ? (Number.isFinite(wordTarget) ? wordTarget : 'unlimited') : undefined,
-            wpm,
+            targetWords: testMode === 'words'
+                ? (Number.isFinite(wordTarget) ? wordTarget : 'unlimited')
+                : undefined,
+            wpm: wpmFinal,
             timeSec: seconds,
             words: words.map(({ surface, reading }) => ({ surface, reading })),
             completedWords: wIndex + (typedKana === currentTarget && currentTarget ? 1 : 0),
