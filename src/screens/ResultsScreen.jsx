@@ -20,14 +20,13 @@ export default function ResultsScreen({ route, navigation }) {
             <Text style={{ color: '#c9d1d9', fontSize: 42, fontWeight: '800' }}>{wpm} WPM</Text>
 
             <View style={{ flexDirection: 'row', marginTop: 20 }}>
-                <Btn title="Retry" onPress={() => navigation.replace('Practice')} />
-                <Btn title="Home" onPress={() => navigation.navigate('Home')} />
+                <Btn title="retry" onPress={() => navigation.replace('Practice')} />
             </View>
 
             {/* optional: missed words list */}
             {Array.isArray(words) && words.length > 0 && (
                 <View style={{ marginTop: 24, width: '100%' }}>
-                    <Text style={{ color: '#8b98a9', marginBottom: 8 }}>Words this run:</Text>
+                    <Text style={{ color: '#8b98a9', marginBottom: 8 }}>words this run:</Text>
                     {words.slice(0, 20).map((w, i) => (
                         <Text key={i} style={{ color: '#c9d1d9', opacity: 0.8 }}>
                             • {w.surface} ({w.reading})
