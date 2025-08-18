@@ -11,6 +11,7 @@ import {
     StatusBar,
     ActivityIndicator,
     ScrollView,
+    StyleSheet,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
@@ -18,11 +19,28 @@ import FuriganaWord from '../components/FuriganaWord';
 import { getSet, listSets, DEFAULT_SET_ID } from '../data';
 import { romajiToHiragana } from '../utils/romanize';
 
-// keep this in sync with the word container's marginright
+// layout
 const INTER_WORD_GAP = 32;
-
-// max raw input length per word = reading length × this multiplier
+// input guard
 const INPUT_LIMIT_MULTIPLIER = 4;
+
+// design tokens
+const COLORS = {
+    bg: '#0f1115',
+    text: '#c9d1d9',
+    subtext: '#8b98a9',
+    accent: '#22c55e',
+    border: '#2a2f3a',
+};
+
+const FONT_SIZES = {
+    xs: 12,
+    sm: 14,
+    md: 16,
+    lg: 20,
+    xl: 32,
+    display: 40, // main word size
+};
 
 // tiny jisho fetcher (random-ish) – returns [{ surface, reading }]
 async function fetchRandomJishoWords(count = 25) {
@@ -53,17 +71,17 @@ async function fetchRandomJishoWords(count = 25) {
 }
 
 export default function PracticeScreen({ navigation }) {
-    // ----- safe area + keyboard offsets -----
+    // safe area + keyboard offsets
     const insets = useSafeAreaInsets();
-    const KAV_OFFSET = Platform.OS === 'ios' ? insets.top + 40: (StatusBar.currentHeight || 0);
-    const EXTRA_BOTTOM_PAD = insets.bottom + -80; // positive padding so content clears keyboard
+    const KAV_OFFSET = Platform.OS === 'ios' ? insets.top + 40 : (StatusBar.currentHeight || 0);
+    const EXTRA_BOTTOM_PAD = insets.bottom + -80; // keep content clear of tall keyboards
 
-    // ---------- test mode controls ----------
+    // test mode controls
     const [testMode, setTestMode] = useState('words');
     const [durationSec, setDurationSec] = useState(30);
     const [wordTarget, setWordTarget] = useState(10);
 
-    // data source: local lesson set or live jisho
+    // data source
     const [source, setSource] = useState('local'); // 'local' | 'jisho'
     const [remoteWords, setRemoteWords] = useState(null);
     const [loadingJisho, setLoadingJisho] = useState(false);
@@ -71,14 +89,14 @@ export default function PracticeScreen({ navigation }) {
     // ui toggles
     const [showRomaji, setShowRomaji] = useState(false);
 
-    // active dataset
+    // dataset
     const [setId, setSetId] = useState(DEFAULT_SET_ID);
     const lesson = useMemo(() => getSet(setId), [setId]);
 
     // shuffle seed
     const [seed, setSeed] = useState(0);
 
-    // pick the pool for this run
+    // pool
     const wordPool =
         source === 'jisho' && Array.isArray(remoteWords) && remoteWords.length
             ? remoteWords
@@ -110,10 +128,10 @@ export default function PracticeScreen({ navigation }) {
     const timerRef = useRef(null);
     const endTsRef = useRef(null);
 
-    // viewport width
+    // viewport
     const [viewportW, setViewportW] = useState(0);
 
-    // conveyor offset (animated)
+    // conveyor offset
     const scrollX = useRef(new Animated.Value(0)).current;
 
     // current word
@@ -197,7 +215,7 @@ export default function PracticeScreen({ navigation }) {
         return i;
     };
 
-    // animator (used for centering)
+    // animator (centering)
     const animateToOffset = (px, animated = true) => {
         if (!animated) { scrollX.setValue(px); return; }
         Animated.timing(scrollX, {
@@ -208,19 +226,18 @@ export default function PracticeScreen({ navigation }) {
         }).start();
     };
 
-    // --- NEW: center the active word, not a caret ---
-    const leftOf = (i) => sumPrevWords(i); // left x (content coords) of word i
+    // center the active word
+    const leftOf = (i) => sumPrevWords(i);
     const computeCenterOffset = (idx) => {
-        const w = wordTotalWidths.current[idx] ?? 0;     // measured width of active word
+        const w = wordTotalWidths.current[idx] ?? 0;
         const left = leftOf(idx);
-        const centerX = left + w / 2;                    // midpoint of active word
-        return Math.round((viewportW / 2) - centerX);    // translate so midpoint sits at screen center
+        const centerX = left + w / 2;
+        return Math.round((viewportW / 2) - centerX);
     };
 
-    // recenter whenever viewport, measurements, or active word changes
     useEffect(() => {
         if (viewportW === 0) return;
-        if (wordTotalWidths.current[wIndex] == null) return; // wait for measurement
+        if (wordTotalWidths.current[wIndex] == null) return;
         animateToOffset(computeCenterOffset(wIndex), true);
     }, [viewportW, layoutTick, wIndex]); // eslint-disable-line
 
@@ -320,20 +337,13 @@ export default function PracticeScreen({ navigation }) {
         setSetId(next);
     };
 
-    // small pill
+    // pill
     const Pill = ({ active, onPress, children }) => (
         <Pressable
             onPress={onPress}
-            style={{
-                paddingVertical: 6,
-                paddingHorizontal: 10,
-                borderRadius: 999,
-                borderWidth: 1,
-                borderColor: active ? '#22c55e' : '#2a2f3a',
-                marginRight: 8,
-            }}
+            style={[styles.pill, active && styles.pillActive]}
         >
-            <Text style={{ color: '#c9d1d9', fontSize: 12 }}>{children}</Text>
+            <Text style={styles.pillText}>{children}</Text>
         </Pressable>
     );
 
@@ -350,35 +360,26 @@ export default function PracticeScreen({ navigation }) {
 
     return (
         <KeyboardAvoidingView
-            style={{ flex: 1, backgroundColor: '#0f1115' }}
+            style={styles.container}
             behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
             keyboardVerticalOffset={KAV_OFFSET}
         >
             <ScrollView
-                contentContainerStyle={{ flexGrow: 1, paddingBottom: EXTRA_BOTTOM_PAD }}
+                contentContainerStyle={[styles.scrollContent, { paddingBottom: EXTRA_BOTTOM_PAD }]}
                 keyboardShouldPersistTaps="handled"
             >
-                <Pressable style={{ flex: 1 }} onPress={() => inputRef.current?.focus()}>
-                    {/* top bar: dataset label + stats */}
-                    <View
-                        style={{
-                            paddingHorizontal: 16,
-                            paddingTop: 16,
-                            paddingBottom: 8,
-                            flexDirection: 'row',
-                            justifyContent: 'space-between',
-                            alignItems: 'center',
-                        }}
-                    >
+                <Pressable style={styles.flex} onPress={() => inputRef.current?.focus()}>
+                    {/* top bar */}
+                    <View style={styles.topBar}>
                         <Pressable onPress={cycleSet}>
-                            <Text style={{ color: '#8b98a9', fontSize: 12 }}>
+                            <Text style={styles.topLabel}>
                                 {lesson.label} • {showRomaji ? 'romaji aid' : 'hiragana/kanji'}
                             </Text>
                         </Pressable>
 
-                        <View style={{ alignItems: 'flex-end' }}>
-                            <Text style={{ color: '#c9d1d9', fontSize: 14 }}>wpm {isFinite(wpm) ? wpm : 0}</Text>
-                            <Text style={{ color: '#8b98a9', fontSize: 12, marginTop: 2 }}>
+                        <View style={styles.topRight}>
+                            <Text style={styles.wpm}>wpm {isFinite(wpm) ? wpm : 0}</Text>
+                            <Text style={styles.meter}>
                                 {testMode === 'time'
                                     ? `⏱ ${remainingSec ?? Math.floor((elapsed || 0) / 1000)}s`
                                     : `🔢 ${wordsProgress}`}
@@ -387,17 +388,17 @@ export default function PracticeScreen({ navigation }) {
                     </View>
 
                     {/* quick mode controls (row 1) */}
-                    <View style={{ paddingHorizontal: 16, paddingBottom: 4, flexDirection: 'row', alignItems: 'center', flexWrap: 'wrap' }}>
+                    <View style={styles.rowControls}>
                         <Pill active={testMode === 'time'} onPress={() => { if (testMode !== 'time') { hardReset(false); setTestMode('time'); } }}>time</Pill>
                         <Pill active={testMode === 'words'} onPress={() => { if (testMode !== 'words') { hardReset(false); setTestMode('words'); } }}>words</Pill>
 
                         {testMode === 'time' ? (
-                            <View style={{ flexDirection: 'row', marginLeft: 6 }}>
+                            <View style={styles.inlineRow}>
                                 <Pill active={durationSec === 15} onPress={() => { hardReset(false); setDurationSec(15); }}>15s</Pill>
                                 <Pill active={durationSec === 30} onPress={() => { hardReset(false); setDurationSec(30); }}>30s</Pill>
                             </View>
                         ) : (
-                            <View style={{ flexDirection: 'row', marginLeft: 6 }}>
+                            <View style={styles.inlineRow}>
                                 <Pill active={wordTarget === 10} onPress={() => { hardReset(false); setWordTarget(10); }}>10</Pill>
                                 <Pill active={wordTarget === 25} onPress={() => { hardReset(false); setWordTarget(25); }}>25</Pill>
                                 <Pill active={wordTarget === 50} onPress={() => { hardReset(false); setWordTarget(50); }}>50</Pill>
@@ -406,20 +407,20 @@ export default function PracticeScreen({ navigation }) {
                         )}
                     </View>
 
-                    {/* source picker + jisho loading indicator (row 2) */}
-                    <View style={{ paddingHorizontal: 16, paddingBottom: 8, flexDirection: 'row', alignItems: 'center' }}>
+                    {/* source picker + jisho indicator (row 2) */}
+                    <View style={styles.rowSource}>
                         <Pill active={source === 'local'} onPress={() => { setSource('local'); hardReset(false); }}>local</Pill>
                         <Pill active={source === 'jisho'} onPress={() => { setSource('jisho'); hardReset(true); }}>jisho</Pill>
 
                         {source === 'jisho' && (
-                            <View style={{ flexDirection: 'row', alignItems: 'center', marginLeft: 10 }}>
+                            <View style={styles.inlineRow}>
                                 {loadingJisho ? (
                                     <>
                                         <ActivityIndicator size="small" />
-                                        <Text style={{ color: '#8b98a9', marginLeft: 6, fontSize: 12 }}>fetching words…</Text>
+                                        <Text style={styles.hint}>fetching words…</Text>
                                     </>
                                 ) : (
-                                    <Text style={{ color: '#8b98a9', marginLeft: 6, fontSize: 12 }}>
+                                    <Text style={styles.hint}>
                                         {Array.isArray(remoteWords) && remoteWords.length
                                             ? `${remoteWords.length} loaded`
                                             : 'no results, using local fallback'}
@@ -431,16 +432,14 @@ export default function PracticeScreen({ navigation }) {
 
                     {/* center area + conveyor (active word centered) */}
                     <View
-                        style={{ flex: 1, justifyContent: 'center' }}
+                        style={styles.centerArea}
                         onLayout={(e) => setViewportW(e.nativeEvent.layout.width)}
                     >
                         <Animated.View
-                            style={{
-                                opacity: source === 'jisho' && loadingJisho ? 0.5 : 1,
-                                flexDirection: 'row',
-                                alignItems: 'flex-end',
-                                transform: [{ translateX: scrollX }], // active word midpoint anchored to screen center
-                            }}
+                            style={[
+                                styles.conveyor,
+                                { opacity: source === 'jisho' && loadingJisho ? 0.5 : 1, transform: [{ translateX: scrollX }] },
+                            ]}
                         >
                             {words.map((w, i) => {
                                 const isActive = i === wIndex;
@@ -448,13 +447,22 @@ export default function PracticeScreen({ navigation }) {
                                     <View
                                         key={`${w.surface}-${i}`}
                                         onLayout={(e) => onMeasureWord(i, e.nativeEvent.layout.width)}
-                                        style={{ flexDirection: 'column', alignItems: 'center', marginRight: INTER_WORD_GAP }}
+                                        style={styles.wordBlock}
                                     >
-                                        <FuriganaWord surface={w.surface} reading={w.reading} active={isActive} fontSize={30} />
+                                        <FuriganaWord
+                                            surface={w.surface}
+                                            reading={w.reading}
+                                            active={isActive}
+                                            fontSize={FONT_SIZES.display}
+                                        />
+
                                         {isActive && showRomaji && (
-                                            <Text style={{ marginTop: 4, color: '#8b98a9', fontSize: 12 }}>{w.romaji}</Text>
+                                            <Text style={styles.romaji}>{w.romaji}</Text>
                                         )}
-                                        {isActive && <Text style={{ marginTop: 8, fontSize: 18, color: '#22c55e' }}>{typedKana}</Text>}
+
+                                        {isActive && (
+                                            <Text style={styles.typedKana}>{typedKana}</Text>
+                                        )}
                                     </View>
                                 );
                             })}
@@ -470,31 +478,17 @@ export default function PracticeScreen({ navigation }) {
                         autoCorrect={false}
                         autoCapitalize="none"
                         keyboardType="default"
-                        style={{ height: 0, width: 0, opacity: 0, position: 'absolute' }}
+                        style={styles.hiddenInput}
                         blurOnSubmit={false}
                     />
 
                     {/* bottom controls */}
-                    <View
-                        style={{
-                            padding: 10,
-                            paddingBottom: -20 + insets.bottom, // small, positive padding that respects safe area
-                            flexDirection: 'row',
-                            justifyContent: 'space-between',
-                            alignItems: 'center',
-                        }}
-                    >
-                        <Pressable
-                            onPress={() => hardReset(true)}
-                            style={{ paddingVertical: 10, paddingHorizontal: 14, borderWidth: 1, borderColor: '#2a2f3a', borderRadius: 10 }}
-                        >
-                            <Text style={{ color: '#c9d1d9' }}>restart</Text>
+                    <View style={[styles.bottomBar, { paddingBottom: -20 + insets.bottom }]}>
+                        <Pressable onPress={() => hardReset(true)} style={styles.button}>
+                            <Text style={styles.buttonText}>restart</Text>
                         </Pressable>
-                        <Pressable
-                            onPress={() => setShowRomaji((s) => !s)}
-                            style={{ paddingVertical: 10, paddingHorizontal: 14, borderWidth: 1, borderColor: '#2a2f3a', borderRadius: 10 }}
-                        >
-                            <Text style={{ color: '#c9d1d9' }}>{showRomaji ? 'romaji: on' : 'romaji: off'}</Text>
+                        <Pressable onPress={() => setShowRomaji((s) => !s)} style={styles.button}>
+                            <Text style={styles.buttonText}>{showRomaji ? 'romaji: on' : 'romaji: off'}</Text>
                         </Pressable>
                     </View>
                 </Pressable>
@@ -502,3 +496,139 @@ export default function PracticeScreen({ navigation }) {
         </KeyboardAvoidingView>
     );
 }
+
+const styles = StyleSheet.create({
+    container: {
+        flex: 1,
+        backgroundColor: COLORS.bg,
+    },
+    scrollContent: {
+        flexGrow: 1,
+    },
+    flex: {
+        flex: 1,
+    },
+
+    // top bar
+    topBar: {
+        paddingHorizontal: 16,
+        paddingTop: 16,
+        paddingBottom: 8,
+        flexDirection: 'row',
+        justifyContent: 'space-between',
+        alignItems: 'center',
+    },
+    topLabel: {
+        color: COLORS.subtext,
+        fontSize: FONT_SIZES.md,
+    },
+    topRight: {
+        alignItems: 'flex-end',
+    },
+    wpm: {
+        color: COLORS.text,
+        fontSize: FONT_SIZES.lg,
+    },
+    meter: {
+        color: COLORS.subtext,
+        fontSize: FONT_SIZES.sm,
+        marginTop: 4,
+    },
+
+    // controls rows
+    rowControls: {
+        paddingHorizontal: 16,
+        paddingBottom: 6,
+        flexDirection: 'row',
+        alignItems: 'center',
+        flexWrap: 'wrap',
+    },
+    rowSource: {
+        paddingHorizontal: 16,
+        paddingBottom: 10,
+        flexDirection: 'row',
+        alignItems: 'center',
+    },
+    inlineRow: {
+        flexDirection: 'row',
+        marginLeft: 8,
+        alignItems: 'center',
+    },
+
+    // pill
+    pill: {
+        paddingVertical: 8,
+        paddingHorizontal: 12,
+        borderRadius: 999,
+        borderWidth: 1,
+        borderColor: COLORS.border,
+        marginRight: 8,
+    },
+    pillActive: {
+        borderColor: COLORS.accent,
+    },
+    pillText: {
+        color: COLORS.text,
+        fontSize: FONT_SIZES.md,
+    },
+
+    // hints / helper text
+    hint: {
+        color: COLORS.subtext,
+        fontSize: FONT_SIZES.sm,
+        marginLeft: 8,
+    },
+
+    // center + conveyor
+    centerArea: {
+        flex: 1,
+        justifyContent: 'center',
+    },
+    conveyor: {
+        flexDirection: 'row',
+        alignItems: 'flex-end',
+    },
+    wordBlock: {
+        flexDirection: 'column',
+        alignItems: 'center',
+        marginRight: INTER_WORD_GAP,
+    },
+    romaji: {
+        marginTop: 6,
+        color: COLORS.subtext,
+        fontSize: FONT_SIZES.md,
+    },
+    typedKana: {
+        marginTop: 10,
+        fontSize: FONT_SIZES.lg,
+        color: COLORS.accent,
+    },
+
+    // hidden input
+    hiddenInput: {
+        height: 0,
+        width: 0,
+        opacity: 0,
+        position: 'absolute',
+    },
+
+    // bottom controls
+    bottomBar: {
+        paddingHorizontal: 16,
+        paddingTop: 8,
+        flexDirection: 'row',
+        justifyContent: 'space-between',
+        alignItems: 'center',
+    },
+    button: {
+        paddingVertical: 12,
+        paddingHorizontal: 16,
+        borderWidth: 1,
+        borderColor: COLORS.border,
+        borderRadius: 12,
+    },
+    buttonText: {
+        color: COLORS.text,
+        fontSize: FONT_SIZES.md,
+    },
+});
