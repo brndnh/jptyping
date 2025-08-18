@@ -1,5 +1,7 @@
-npx create-expo-app jptyping --template blank
+1. run in terminal.
+    npm install
 
-npm i @react-navigation/native @react-navigation/native-stack react-native-screens react-native-safe-area-context react-native-gesture-handler @react-native-async-storage/async-storage react-native-svg react-native-reanimated
+    npm i @react-navigation/native @react-navigation/native-stack react-native-screens react-native-safe-area-context react-native-gesture-handler @react-native-async-storage/async-storage react-native-svg react-native-reanimated
 
-npm run start
+2. launch app.
+    npm run start
