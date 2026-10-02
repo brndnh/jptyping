@@ -6,8 +6,8 @@ const KAOMOJIS = [
     '(ﾉ◕ヮ◕)ﾉ*:･ﾟ✧', '(¬‿¬)', '(๑˃̵ᴗ˂̵)و', '✧(๑•̀ㅂ•́)و',
 ];
 
-export default function ResultsScreen({ results, onBack }) {
-    const { wpm = 0, timeSec = 0, words = [] } = results;
+export default function ResultsScreen({ results, onBack, onOpenStats }) {
+    const { wpm = 0, timeSec = 0, accuracy = null, words = [], isBest, previousBest } = results;
     const [kaomoji] = useState(() => KAOMOJIS[Math.floor(Math.random() * KAOMOJIS.length)]);
 
     // enter / esc goes back
@@ -25,10 +25,18 @@ export default function ResultsScreen({ results, onBack }) {
                 <h1 className="results-wpm">
                     {wpm} WPM {kaomoji}
                 </h1>
-                <p className="results-time">time: {timeSec}s</p>
-                <button className="button button-filled" onClick={onBack}>
-                    back
-                </button>
+                {isBest && <p className="results-best">new personal best! (was {previousBest})</p>}
+                <p className="results-time">
+                    time: {timeSec}s{accuracy != null && ` · accuracy: ${accuracy}%`}
+                </p>
+                <div className="results-actions">
+                    <button className="button button-filled" onClick={onBack}>
+                        back
+                    </button>
+                    <button className="button" onClick={onOpenStats}>
+                        stats
+                    </button>
+                </div>
             </section>
 
             {words.length > 0 && (

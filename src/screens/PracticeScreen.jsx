@@ -1,11 +1,14 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 
 import FuriganaWord from '../components/FuriganaWord.jsx';
-import { getSet, listSets, DEFAULT_SET_ID } from '../data';
-import { romajiToHiragana, hiraganaToRomaji } from '../utils/romanize';
+import { getSet, listSets } from '../data';
+import { romajiToHiragana, hiraganaToRomaji, normalizeKana, canStillMatch } from '../utils/romanize';
+import { getWeakWords, WEAK_MIN } from '../utils/progress';
 
 // input guard
 const INPUT_LIMIT_MULTIPLIER = 4;
+// weak words: how many to drill
+const WEAK_POOL_SIZE = 30;
 // jisho: words taken from each fetched page
 const WORDS_PER_PAGE = 5;
 // readings we can type (katakana/ー can't be produced from romaji)
@@ -59,7 +62,10 @@ async function fetchRandomJishoWords(count = 25) {
 
 // stored romaji when it actually types the reading, generated otherwise
 const romajiHint = (w) =>
-    w.romaji && romajiToHiragana(w.romaji) === w.reading ? w.romaji : hiraganaToRomaji(w.reading);
+    w.romaji && romajiToHiragana(w.romaji, w.reading) === w.reading ? w.romaji : hiraganaToRomaji(w.reading);
+
+const THEME_LABELS = { auto: 'theme: auto', light: 'theme: light', dark: 'theme: dark' };
+const NEXT_THEME = { auto: 'light', light: 'dark', dark: 'auto' };
 
 // longest common prefix length
 const lcp = (a, b) => {
@@ -89,25 +95,36 @@ const Button = ({ onClick, children }) => (
     </button>
 );
 
-export default function PracticeScreen({ settings, updateSettings, onFinish }) {
-    const { testMode, durationSec, wordTarget, source, showRomaji, showFurigana } = settings;
+export default function PracticeScreen({ settings, updateSettings, onFinish, onOpenStats }) {
+    const { testMode, durationSec, wordTarget, source, setId, showRomaji, showFurigana, theme } = settings;
 
     // data source
     const [remoteWords, setRemoteWords] = useState(null);
     const [loadingJisho, setLoadingJisho] = useState(false);
 
     // dataset
-    const [setId, setSetId] = useState(DEFAULT_SET_ID);
     const lesson = useMemo(() => getSet(setId), [setId]);
+    const setsMeta = listSets();
 
     // shuffle seed
     const [seed, setSeed] = useState(0);
+
+    // weak words from saved progress (re-read on every reshuffle)
+    const weakWords = useMemo(
+        () => (source === 'weak'
+            ? getWeakWords(WEAK_POOL_SIZE).map((w) => ({ surface: w.s, reading: w.r, romaji: '' }))
+            : []),
+        [source, seed]
+    );
+    const hasWeakWords = weakWords.length >= WEAK_MIN;
 
     // pool
     const wordPool =
         source === 'jisho' && Array.isArray(remoteWords) && remoteWords.length
             ? remoteWords
-            : lesson.items;
+            : source === 'weak' && hasWeakWords
+                ? weakWords
+                : lesson.items;
 
     // words (shuffled)
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -123,6 +140,16 @@ export default function PracticeScreen({ settings, updateSettings, onFinish }) {
     const [raw, setRaw] = useState('');
     const [typedKana, setTypedKana] = useState('');
     const composingRef = useRef(false);
+    // text that just completed a word; Safari can re-send it after compositionend
+    const committedRef = useRef(null);
+
+    // accuracy + per-word tracking (refs: they don't drive rendering)
+    const keysRef = useRef(0);
+    const wrongKeysRef = useRef(0);
+    const onTrackRef = useRef(true);
+    const wordMistakesRef = useRef(0);
+    const wordStartRef = useRef(null);
+    const wordResultsRef = useRef([]);
 
     // refs / timers
     const inputRef = useRef(null);
@@ -186,8 +213,8 @@ export default function PracticeScreen({ settings, updateSettings, onFinish }) {
     const grossChars = grossCharsBeforeThisWord + cIndex;
     const wpm = Math.round((grossChars / 5) / minutes);
 
-    // finish run
-    const finishRun = () => {
+    // finish run; partialChars = correctly typed chars of the unfinished word
+    const finishRun = (partialChars = cIndex) => {
         clearInterval(timerRef.current);
 
         // compute precise elapsed for final wpm (don't rely on state that may be stale)
@@ -198,19 +225,25 @@ export default function PracticeScreen({ settings, updateSettings, onFinish }) {
 
         // clamp to at least 1s to avoid insane spikes from ~0 minutes
         const finalMinutes = Math.max(1 / 60, finalMs / 60000);
-        const wpmFinal = Math.round((grossChars / 5) / finalMinutes);
+        const completed = wordResultsRef.current;
+        const finalGross = completed.reduce((acc, w) => acc + [...w.reading].length + 1 /* gap */, 0) + partialChars;
+        const wpmFinal = Math.round((finalGross / 5) / finalMinutes);
+        const keys = keysRef.current;
 
         onFinish({
             mode: testMode,
             source,
+            setId: lesson.id,
             durationSec: testMode === 'time' ? durationSec : undefined,
             targetWords: testMode === 'words'
                 ? (Number.isFinite(wordTarget) ? wordTarget : 'unlimited')
                 : undefined,
             wpm: wpmFinal,
+            accuracy: keys ? Math.round((100 * (keys - wrongKeysRef.current)) / keys) : null,
             timeSec: Math.floor(finalMs / 1000),
             words: words.map(({ surface, reading }) => ({ surface, reading })),
-            completedWords: wIndex + (typedKana === currentTarget && currentTarget ? 1 : 0),
+            completedWords: completed.length,
+            wordResults: completed,
         });
     };
 
@@ -231,12 +264,17 @@ export default function PracticeScreen({ settings, updateSettings, onFinish }) {
         return () => clearInterval(timerRef.current);
     }, [startTs, testMode]);
 
-    // input handler with per-word cap
-    const handleText = (text) => {
+    // still heading toward the target (reading, or the written form via an IME)?
+    const isOnTrack = (text) =>
+        currentWord?.surface.startsWith(text.trim()) || canStillMatch(text, currentTarget);
+
+    // input handler with per-word cap; committed = an IME composition was just confirmed
+    const handleText = (text, committed = false) => {
         if (!startTs && text.length > 0) {
             const now = Date.now();
             setStartTs(now);
             endTsRef.current = testMode === 'time' ? now + durationSec * 1000 : null;
+            wordStartRef.current = now;
         }
 
         // never trim mid-composition, it breaks the IME
@@ -245,20 +283,49 @@ export default function PracticeScreen({ settings, updateSettings, onFinish }) {
 
         setRaw(text);
 
-        const kana = romajiToHiragana(text);
+        const kana = romajiToHiragana(text, currentTarget);
         setTypedKana(kana);
-        setCIndex(lcp(kana, currentTarget));
+
+        // keystroke accuracy; mid-composition text is the IME's business, not a keystroke
+        if (!composingRef.current) {
+            const onTrack = isOnTrack(text);
+            if (committed || text.length > raw.length) {
+                keysRef.current += 1;
+                if (!onTrack) {
+                    wrongKeysRef.current += 1;
+                    if (onTrackRef.current) wordMistakesRef.current += 1;
+                }
+            }
+            onTrackRef.current = onTrack;
+        }
+
+        // either the reading (romaji/kana) or the written form (IME converted to kanji) completes the word
+        const typedSurface = text.trim() === currentWord?.surface;
+        const typedReading = normalizeKana(kana) === normalizeKana(currentTarget);
+        setCIndex(typedSurface ? currentTarget.length : lcp(normalizeKana(kana), normalizeKana(currentTarget)));
 
         // kana IMEs: wait for the composition to be committed before advancing
-        if (kana !== currentTarget || !currentTarget || composingRef.current) return;
+        if (!(typedSurface || typedReading) || !currentTarget || composingRef.current) return;
 
+        committedRef.current = text;
         setRaw('');
         setTypedKana('');
         setCIndex(0);
 
+        const now = Date.now();
+        wordResultsRef.current.push({
+            surface: currentWord.surface,
+            reading: currentWord.reading,
+            ms: now - (wordStartRef.current ?? now),
+            mistakes: wordMistakesRef.current,
+        });
+        wordStartRef.current = now;
+        wordMistakesRef.current = 0;
+        onTrackRef.current = true;
+
         const targetCount = testMode === 'words' && Number.isFinite(wordTarget) ? wordTarget : Infinity;
         if (wIndex + 1 >= targetCount || wIndex + 1 >= words.length) {
-            finishRun();
+            finishRun(0);
             return;
         }
         setWIndex(wIndex + 1);
@@ -276,6 +343,12 @@ export default function PracticeScreen({ settings, updateSettings, onFinish }) {
         setTypedKana('');
         setStartTs(null);
         setElapsed(0);
+        keysRef.current = 0;
+        wrongKeysRef.current = 0;
+        onTrackRef.current = true;
+        wordMistakesRef.current = 0;
+        wordStartRef.current = null;
+        wordResultsRef.current = [];
         focusInput();
     };
 
@@ -296,15 +369,6 @@ export default function PracticeScreen({ settings, updateSettings, onFinish }) {
         return () => window.removeEventListener('keydown', onKey);
     }, []);
 
-    // cycle sets
-    const setsMeta = listSets();
-    const cycleSet = () => {
-        const i = setsMeta.findIndex((s) => s.id === setId);
-        const next = setsMeta[(i + 1) % setsMeta.length]?.id || DEFAULT_SET_ID;
-        setSetId(next);
-        hardReset(false);
-    };
-
     // ui readouts
     const remainingSec =
         testMode === 'time' && endTsRef.current
@@ -318,9 +382,9 @@ export default function PracticeScreen({ settings, updateSettings, onFinish }) {
         <main className="practice" onClick={focusInput}>
             {/* top bar */}
             <header className="top-bar">
-                <button type="button" className="top-label" onMouseDown={keepFocus} onClick={cycleSet}>
-                    {lesson.label}
-                </button>
+                <div className="top-label">
+                    {source === 'jisho' ? 'jisho (random words)' : source === 'weak' && hasWeakWords ? 'your weak words' : lesson.label}
+                </div>
 
                 <div className="top-right">
                     <div className="wpm">wpm {isFinite(wpm) ? wpm : 0}</div>
@@ -354,8 +418,26 @@ export default function PracticeScreen({ settings, updateSettings, onFinish }) {
 
             {/* source picker + jisho indicator (row 2) */}
             <div className="row">
-                <Pill active={source === 'local'} onClick={() => changeSetting({ source: 'local' })}>local</Pill>
+                {setsMeta.map((set) => (
+                    <Pill
+                        key={set.id}
+                        active={source === 'local' && lesson.id === set.id}
+                        onClick={() => changeSetting({ source: 'local', setId: set.id }, true)}
+                    >
+                        {set.id}
+                    </Pill>
+                ))}
+
+                <span className="row-divider" />
+
                 <Pill active={source === 'jisho'} onClick={() => changeSetting({ source: 'jisho' }, true)}>jisho</Pill>
+                <Pill active={source === 'weak'} onClick={() => changeSetting({ source: 'weak' }, true)}>weak</Pill>
+
+                {source === 'weak' && (
+                    <span className="hint">
+                        {hasWeakWords ? `${weakWords.length} words` : `not enough history yet, using ${lesson.id}`}
+                    </span>
+                )}
 
                 {source === 'jisho' && (
                     <span className="hint">
@@ -415,11 +497,20 @@ export default function PracticeScreen({ settings, updateSettings, onFinish }) {
                 ref={inputRef}
                 className="hidden-input"
                 value={raw}
-                onChange={(e) => handleText(e.target.value)}
+                onChange={(e) => {
+                    const text = e.target.value;
+                    if (text === committedRef.current) {
+                        committedRef.current = null;
+                        setRaw('');
+                        return;
+                    }
+                    committedRef.current = null;
+                    handleText(text);
+                }}
                 onCompositionStart={() => { composingRef.current = true; }}
                 onCompositionEnd={(e) => {
                     composingRef.current = false;
-                    handleText(e.currentTarget.value);
+                    handleText(e.currentTarget.value, true);
                 }}
                 onFocus={() => setFocused(true)}
                 onBlur={() => setFocused(false)}
@@ -433,7 +524,10 @@ export default function PracticeScreen({ settings, updateSettings, onFinish }) {
 
             {/* bottom controls */}
             <footer className="bottom-bar">
-                <Button onClick={() => hardReset(true)}>restart</Button>
+                <div className="bottom-actions">
+                    <Button onClick={() => hardReset(true)}>restart</Button>
+                    <Button onClick={onOpenStats}>stats</Button>
+                </div>
 
                 <div className="bottom-toggles">
                     <Button onClick={() => updateSettings({ showRomaji: !showRomaji })}>
@@ -441,6 +535,9 @@ export default function PracticeScreen({ settings, updateSettings, onFinish }) {
                     </Button>
                     <Button onClick={() => updateSettings({ showFurigana: !showFurigana })}>
                         {showFurigana ? 'furigana: on' : 'furigana: off'}
+                    </Button>
+                    <Button onClick={() => updateSettings({ theme: NEXT_THEME[theme] ?? 'auto' })}>
+                        {THEME_LABELS[theme] ?? THEME_LABELS.auto}
                     </Button>
                 </div>
             </footer>

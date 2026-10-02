@@ -1,7 +1,7 @@
 {
     "id": "N5",
-    "label": "Example Set (JLPT N5 sample)",
-    "description": "demo list for testing",
+    "label": "JLPT N5",
+    "description": "core JLPT N5 vocabulary",
   "items": [
     { "surface": "学校", "reading": "がっこう", "romaji": "gakkou" },
     { "surface": "先生", "reading": "せんせい", "romaji": "sensei" },
