@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 
 import FuriganaWord from '../components/FuriganaWord.jsx';
-import { getSet, listSets } from '../data';
+import { getSet, getSentenceSet, listSets } from '../data';
 import { romajiToHiragana, hiraganaToRomaji, normalizeKana, canStillMatch } from '../utils/romanize';
 import { getWeakWords, WEAK_MIN } from '../utils/progress';
 
@@ -64,8 +64,21 @@ async function fetchRandomJishoWords(count = 25) {
 const romajiHint = (w) =>
     w.romaji && romajiToHiragana(w.romaji, w.reading) === w.reading ? w.romaji : hiraganaToRomaji(w.reading);
 
+// count options for the count-based test, per content type
+const COUNT_OPTIONS = { words: [10, 25, 50], sentences: [3, 5, 10] };
+
 const THEME_LABELS = { auto: 'theme: auto', light: 'theme: light', dark: 'theme: dark' };
 const NEXT_THEME = { auto: 'light', light: 'dark', dark: 'auto' };
+
+// one results-list entry per sentence in the run
+function sentencesInRun(chunks) {
+    const sentences = [];
+    for (const c of chunks) {
+        const current = sentences[c.sentence] ??= { surface: '', note: c.en };
+        current.surface += c.surface + (c.punct || '');
+    }
+    return sentences;
+}
 
 // longest common prefix length
 const lcp = (a, b) => {
@@ -96,7 +109,11 @@ const Button = ({ onClick, children }) => (
 );
 
 export default function PracticeScreen({ settings, updateSettings, onFinish, onOpenStats }) {
-    const { testMode, durationSec, wordTarget, source, setId, showRomaji, showFurigana, theme } = settings;
+    const { testMode, durationSec, wordTarget, sentenceTarget, content, source, setId, showRomaji, showFurigana, theme } = settings;
+    const isSentences = content === 'sentences';
+    // the count test counts sentences in sentence mode
+    const countKey = isSentences ? 'sentenceTarget' : 'wordTarget';
+    const countTarget = isSentences ? sentenceTarget : wordTarget;
 
     // data source
     const [remoteWords, setRemoteWords] = useState(null);
@@ -126,9 +143,24 @@ export default function PracticeScreen({ settings, updateSettings, onFinish, onO
                 ? weakWords
                 : lesson.items;
 
+    // sentences: shuffled, then flattened into chunks typed one at a time like words
+    const sentenceSet = useMemo(() => getSentenceSet(setId), [setId]);
+
     // words (shuffled)
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    const words = useMemo(() => shuffle(wordPool), [wordPool, seed]);
+    const words = useMemo(
+        () => (isSentences
+            ? shuffle(sentenceSet.items).flatMap((sentence, si) =>
+                sentence.segments.map((seg, k) => ({
+                    ...seg,
+                    romaji: '',
+                    en: sentence.en,
+                    sentence: si,
+                    last: k === sentence.segments.length - 1,
+                })))
+            : shuffle(wordPool)),
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+        [isSentences, sentenceSet, wordPool, seed]
+    );
 
     // session state
     const [wIndex, setWIndex] = useState(0);
@@ -165,6 +197,10 @@ export default function PracticeScreen({ settings, updateSettings, onFinish, onO
     // current word
     const currentWord = words[wIndex] ?? words[0];
     const currentTarget = currentWord?.reading || '';
+    // what an IME user might commit: the written form, with or without its punctuation
+    const writtenForms = currentWord
+        ? [currentWord.surface, currentWord.surface + (currentWord.punct || '')]
+        : [];
 
     const focusInput = () => inputRef.current?.focus({ preventScroll: true });
 
@@ -231,19 +267,24 @@ export default function PracticeScreen({ settings, updateSettings, onFinish, onO
         const keys = keysRef.current;
 
         onFinish({
-            mode: testMode,
-            source,
+            mode: testMode === 'words' && isSentences ? 'sentences' : testMode,
+            content,
+            source: isSentences ? 'local' : source,
             setId: lesson.id,
             durationSec: testMode === 'time' ? durationSec : undefined,
             targetWords: testMode === 'words'
-                ? (Number.isFinite(wordTarget) ? wordTarget : 'unlimited')
+                ? (Number.isFinite(countTarget) ? countTarget : 'unlimited')
                 : undefined,
             wpm: wpmFinal,
             accuracy: keys ? Math.round((100 * (keys - wrongKeysRef.current)) / keys) : null,
             timeSec: Math.floor(finalMs / 1000),
-            words: words.map(({ surface, reading }) => ({ surface, reading })),
-            completedWords: completed.length,
-            wordResults: completed,
+            // what the run actually reached, including the word in progress
+            words: isSentences
+                ? sentencesInRun(words.slice(0, wIndex + 1))
+                : words.slice(0, wIndex + 1).map(({ surface, reading }) => ({ surface, reading })),
+            completedWords: isSentences ? completed.filter((w) => w.last).length : completed.length,
+            // sentence chunks (私は, ...) would swamp the weak-words list
+            wordResults: isSentences ? [] : completed,
         });
     };
 
@@ -266,7 +307,7 @@ export default function PracticeScreen({ settings, updateSettings, onFinish, onO
 
     // still heading toward the target (reading, or the written form via an IME)?
     const isOnTrack = (text) =>
-        currentWord?.surface.startsWith(text.trim()) || canStillMatch(text, currentTarget);
+        writtenForms.some((form) => form.startsWith(text.trim())) || canStillMatch(text, currentTarget);
 
     // input handler with per-word cap; committed = an IME composition was just confirmed
     const handleText = (text, committed = false) => {
@@ -300,7 +341,7 @@ export default function PracticeScreen({ settings, updateSettings, onFinish, onO
         }
 
         // either the reading (romaji/kana) or the written form (IME converted to kanji) completes the word
-        const typedSurface = text.trim() === currentWord?.surface;
+        const typedSurface = writtenForms.includes(text.trim());
         const typedReading = normalizeKana(kana) === normalizeKana(currentTarget);
         setCIndex(typedSurface ? currentTarget.length : lcp(normalizeKana(kana), normalizeKana(currentTarget)));
 
@@ -318,13 +359,17 @@ export default function PracticeScreen({ settings, updateSettings, onFinish, onO
             reading: currentWord.reading,
             ms: now - (wordStartRef.current ?? now),
             mistakes: wordMistakesRef.current,
+            last: currentWord.last,
         });
         wordStartRef.current = now;
         wordMistakesRef.current = 0;
         onTrackRef.current = true;
 
-        const targetCount = testMode === 'words' && Number.isFinite(wordTarget) ? wordTarget : Infinity;
-        if (wIndex + 1 >= targetCount || wIndex + 1 >= words.length) {
+        const targetCount = testMode === 'words' && Number.isFinite(countTarget) ? countTarget : Infinity;
+        const reachedTarget = isSentences
+            ? currentWord.last && currentWord.sentence + 1 >= targetCount
+            : wIndex + 1 >= targetCount;
+        if (reachedTarget || wIndex + 1 >= words.length) {
             finishRun(0);
             return;
         }
@@ -375,15 +420,18 @@ export default function PracticeScreen({ settings, updateSettings, onFinish, onO
             ? Math.max(0, Math.ceil((endTsRef.current - Date.now()) / 1000))
             : durationSec;
 
+    const position = isSentences ? (currentWord?.sentence ?? 0) + 1 : wIndex + 1;
     const wordsProgress =
-        `${Math.min(wIndex + 1, Number.isFinite(wordTarget) ? wordTarget : wIndex + 1)} / ${Number.isFinite(wordTarget) ? wordTarget : '∞'}`;
+        `${Math.min(position, Number.isFinite(countTarget) ? countTarget : position)} / ${Number.isFinite(countTarget) ? countTarget : '∞'}${isSentences ? ' sentences' : ''}`;
 
     return (
         <main className="practice" onClick={focusInput}>
             {/* top bar */}
             <header className="top-bar">
                 <div className="top-label">
-                    {source === 'jisho' ? 'jisho (random words)' : source === 'weak' && hasWeakWords ? 'your weak words' : lesson.label}
+                    {isSentences
+                        ? sentenceSet.label
+                        : source === 'jisho' ? 'jisho (random words)' : source === 'weak' && hasWeakWords ? 'your weak words' : lesson.label}
                 </div>
 
                 <div className="top-right">
@@ -397,7 +445,7 @@ export default function PracticeScreen({ settings, updateSettings, onFinish, onO
             {/* quick mode controls (row 1) */}
             <div className="row">
                 <Pill active={testMode === 'time'} onClick={() => testMode !== 'time' && changeSetting({ testMode: 'time' })}>time</Pill>
-                <Pill active={testMode === 'words'} onClick={() => testMode !== 'words' && changeSetting({ testMode: 'words' })}>words</Pill>
+                <Pill active={testMode === 'words'} onClick={() => testMode !== 'words' && changeSetting({ testMode: 'words' })}>{isSentences ? 'count' : 'words'}</Pill>
 
                 <span className="row-divider" />
 
@@ -408,38 +456,47 @@ export default function PracticeScreen({ settings, updateSettings, onFinish, onO
                     </>
                 ) : (
                     <>
-                        <Pill active={wordTarget === 10} onClick={() => changeSetting({ wordTarget: 10 })}>10</Pill>
-                        <Pill active={wordTarget === 25} onClick={() => changeSetting({ wordTarget: 25 })}>25</Pill>
-                        <Pill active={wordTarget === 50} onClick={() => changeSetting({ wordTarget: 50 })}>50</Pill>
-                        <Pill active={!Number.isFinite(wordTarget)} onClick={() => changeSetting({ wordTarget: Infinity })}>∞</Pill>
+                        {COUNT_OPTIONS[isSentences ? 'sentences' : 'words'].map((n) => (
+                            <Pill key={n} active={countTarget === n} onClick={() => changeSetting({ [countKey]: n })}>{n}</Pill>
+                        ))}
+                        <Pill active={!Number.isFinite(countTarget)} onClick={() => changeSetting({ [countKey]: Infinity })}>∞</Pill>
                     </>
                 )}
             </div>
 
-            {/* source picker + jisho indicator (row 2) */}
+            {/* content + source picker (row 2) */}
             <div className="row">
+                <Pill active={!isSentences} onClick={() => isSentences && changeSetting({ content: 'words' }, true)}>vocab</Pill>
+                <Pill active={isSentences} onClick={() => !isSentences && changeSetting({ content: 'sentences', source: 'local' }, true)}>sentences</Pill>
+
+                <span className="row-divider" />
+
                 {setsMeta.map((set) => (
                     <Pill
                         key={set.id}
-                        active={source === 'local' && lesson.id === set.id}
+                        active={(isSentences || source === 'local') && lesson.id === set.id}
                         onClick={() => changeSetting({ source: 'local', setId: set.id }, true)}
                     >
                         {set.id}
                     </Pill>
                 ))}
 
-                <span className="row-divider" />
+                {/* jisho and weak words are vocab-only */}
+                {!isSentences && (
+                    <>
+                        <span className="row-divider" />
+                        <Pill active={source === 'jisho'} onClick={() => changeSetting({ source: 'jisho' }, true)}>jisho</Pill>
+                        <Pill active={source === 'weak'} onClick={() => changeSetting({ source: 'weak' }, true)}>weak</Pill>
+                    </>
+                )}
 
-                <Pill active={source === 'jisho'} onClick={() => changeSetting({ source: 'jisho' }, true)}>jisho</Pill>
-                <Pill active={source === 'weak'} onClick={() => changeSetting({ source: 'weak' }, true)}>weak</Pill>
-
-                {source === 'weak' && (
+                {!isSentences && source === 'weak' && (
                     <span className="hint">
                         {hasWeakWords ? `${weakWords.length} words` : `not enough history yet, using ${lesson.id}`}
                     </span>
                 )}
 
-                {source === 'jisho' && (
+                {!isSentences && source === 'jisho' && (
                     <span className="hint">
                         {loadingJisho
                             ? 'fetching words…'
@@ -467,7 +524,8 @@ export default function PracticeScreen({ settings, updateSettings, onFinish, onO
                             <div
                                 key={`${w.surface}-${i}`}
                                 ref={(el) => { wordRefs.current[i] = el; }}
-                                className="word-block"
+                                // chunks of one sentence sit close together
+                                className={`word-block${w.last === false ? ' joined' : ''}`}
                             >
                                 <FuriganaWord
                                     surface={w.surface}
@@ -475,6 +533,7 @@ export default function PracticeScreen({ settings, updateSettings, onFinish, onO
                                     matched={isActive ? cIndex : 0}
                                     active={isActive}
                                 />
+                                {w.punct && <span className={`punct${isActive ? ' active' : ''}`}>{w.punct}</span>}
 
                                 {isActive && (
                                     <div className="word-below">
@@ -491,6 +550,8 @@ export default function PracticeScreen({ settings, updateSettings, onFinish, onO
 
                 {!focused && <div className="focus-hint">tap here to start typing</div>}
             </div>
+
+            {isSentences && <p className="translation">{currentWord?.en}</p>}
 
             {/* hidden input (romaji or kana) */}
             <input

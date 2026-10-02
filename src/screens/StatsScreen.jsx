@@ -11,7 +11,7 @@ import {
     WEAK_MIN,
 } from '../utils/progress';
 
-const SET_ORDER = ['N5', 'N4', 'N3', 'jisho', 'weak'];
+const SET_ORDER = ['N5', 'N4', 'N3', 'N5 sentences', 'N4 sentences', 'N3 sentences', 'jisho', 'weak'];
 const CHART_RUNS = 50;
 const TABLE_RUNS = 20;
 

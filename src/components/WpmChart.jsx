@@ -19,7 +19,7 @@ export const formatDate = (t, withTime = false) =>
     });
 
 export const formatMode = (run) =>
-    run.mode === 'time' ? `${run.n}s` : `${run.n === 'unlimited' ? '∞' : run.n} words`;
+    run.mode === 'time' ? `${run.n}s` : `${run.n === 'unlimited' ? '∞' : run.n} ${run.mode === 'sentences' ? 'sentences' : 'words'}`;
 
 /**
  * Single-series line: wpm per run, oldest -> newest.
