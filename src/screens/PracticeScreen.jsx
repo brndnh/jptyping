@@ -88,8 +88,13 @@ const lcp = (a, b) => {
     return i;
 };
 
-// buttons keep focus on the hidden input so the mobile keyboard stays open
-const keepFocus = (e) => e.preventDefault();
+// phones/tablets: the keyboard should only open when the word area is tapped
+const IS_TOUCH = typeof window !== 'undefined' && window.matchMedia('(hover: none) and (pointer: coarse)').matches;
+
+// desktop: buttons keep focus on the hidden input so typing carries on after a click
+const keepFocus = (e) => {
+    if (!IS_TOUCH) e.preventDefault();
+};
 
 const Pill = ({ active, onClick, children }) => (
     <button
@@ -147,9 +152,11 @@ export default function PracticeScreen({ settings, updateSettings, onFinish, onO
     const sentenceSet = useMemo(() => getSentenceSet(setId), [setId]);
 
     // words (shuffled)
+    // count tests only queue what they need, so the line ends at the last word to type
+    const runLimit = testMode === 'words' && Number.isFinite(countTarget) ? countTarget : Infinity;
     const words = useMemo(
         () => (isSentences
-            ? shuffle(sentenceSet.items).flatMap((sentence, si) =>
+            ? shuffle(sentenceSet.items).slice(0, runLimit).flatMap((sentence, si) =>
                 sentence.segments.map((seg, k) => ({
                     ...seg,
                     romaji: '',
@@ -157,9 +164,9 @@ export default function PracticeScreen({ settings, updateSettings, onFinish, onO
                     sentence: si,
                     last: k === sentence.segments.length - 1,
                 })))
-            : shuffle(wordPool)),
+            : shuffle(wordPool).slice(0, runLimit)),
         // eslint-disable-next-line react-hooks/exhaustive-deps
-        [isSentences, sentenceSet, wordPool, seed]
+        [isSentences, sentenceSet, wordPool, runLimit, seed]
     );
 
     // session state
@@ -203,6 +210,12 @@ export default function PracticeScreen({ settings, updateSettings, onFinish, onO
         : [];
 
     const focusInput = () => inputRef.current?.focus({ preventScroll: true });
+    // focus without a tap on the words: desktop only, so phones don't pop the keyboard
+    const autoFocus = () => !IS_TOUCH && focusInput();
+
+    // furigana peek (furigana off): tap the current word to show its reading
+    const [peek, setPeek] = useState(false);
+    useEffect(() => setPeek(false), [wIndex]);
 
     // center the active word in the stage
     const recenter = useCallback(() => {
@@ -224,7 +237,7 @@ export default function PracticeScreen({ settings, updateSettings, onFinish, onO
 
     // focus & cleanup
     useEffect(() => {
-        focusInput();
+        autoFocus();
         return () => clearInterval(timerRef.current);
     }, []);
 
@@ -394,7 +407,8 @@ export default function PracticeScreen({ settings, updateSettings, onFinish, onO
         wordMistakesRef.current = 0;
         wordStartRef.current = null;
         wordResultsRef.current = [];
-        focusInput();
+        setPeek(false);
+        autoFocus();
     };
 
     // settings changes restart the run
@@ -403,12 +417,16 @@ export default function PracticeScreen({ settings, updateSettings, onFinish, onO
         updateSettings(patch);
     };
 
-    // esc restarts
+    // esc restarts; on desktop, typing anywhere refocuses the input
     const hardResetRef = useRef(hardReset);
     hardResetRef.current = hardReset;
     useEffect(() => {
         const onKey = (e) => {
             if (e.key === 'Escape' && !e.isComposing) hardResetRef.current(true);
+            const typing = e.key.length === 1 && !e.ctrlKey && !e.metaKey && !e.altKey;
+            if (!IS_TOUCH && typing && document.activeElement !== inputRef.current) {
+                inputRef.current?.focus({ preventScroll: true });
+            }
         };
         window.addEventListener('keydown', onKey);
         return () => window.removeEventListener('keydown', onKey);
@@ -425,7 +443,7 @@ export default function PracticeScreen({ settings, updateSettings, onFinish, onO
         `${Math.min(position, Number.isFinite(countTarget) ? countTarget : position)} / ${Number.isFinite(countTarget) ? countTarget : '∞'}${isSentences ? ' sentences' : ''}`;
 
     return (
-        <main className="practice" onClick={focusInput}>
+        <main className="practice">
             {/* top bar */}
             <header className="top-bar">
                 <div className="top-label">
@@ -508,7 +526,7 @@ export default function PracticeScreen({ settings, updateSettings, onFinish, onO
             </div>
 
             {/* stage + conveyor (active word centered) */}
-            <div className="stage" ref={stageRef}>
+            <div className="stage" ref={stageRef} onClick={focusInput}>
                 <div
                     className="conveyor"
                     style={{
@@ -527,12 +545,19 @@ export default function PracticeScreen({ settings, updateSettings, onFinish, onO
                                 // chunks of one sentence sit close together
                                 className={`word-block${w.last === false ? ' joined' : ''}`}
                             >
-                                <FuriganaWord
-                                    surface={w.surface}
-                                    reading={showFurigana ? w.reading : ''}
-                                    matched={isActive ? cIndex : 0}
-                                    active={isActive}
-                                />
+                                <span
+                                    className="word-hit"
+                                    onClick={isActive && !showFurigana ? () => setPeek((p) => !p) : undefined}
+                                >
+                                    <FuriganaWord
+                                        surface={w.surface}
+                                        reading={w.reading}
+                                        matched={isActive ? cIndex : 0}
+                                        active={isActive}
+                                        concealed={!showFurigana}
+                                        revealed={isActive && peek}
+                                    />
+                                </span>
                                 {w.punct && <span className={`punct${isActive ? ' active' : ''}`}>{w.punct}</span>}
 
                                 {isActive && (
@@ -548,7 +573,9 @@ export default function PracticeScreen({ settings, updateSettings, onFinish, onO
                     })}
                 </div>
 
-                {!focused && <div className="focus-hint">tap here to start typing</div>}
+                {!focused && (
+                    <div className="focus-hint">{IS_TOUCH ? 'tap here to start typing' : 'click here or just start typing'}</div>
+                )}
             </div>
 
             {isSentences && <p className="translation">{currentWord?.en}</p>}
