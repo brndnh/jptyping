@@ -1,7 +1,13 @@
-1. run in terminal.
+# JP Typing Practice
+
+Japanese typing practice in the browser. Type the reading of each word in romaji or kana.
+
+## Develop
+
     npm install
+    npm run dev
 
-    npm i @react-navigation/native @react-navigation/native-stack react-native-screens react-native-safe-area-context react-native-gesture-handler @react-native-async-storage/async-storage react-native-svg react-native-reanimated
+## Deploy
 
-2. launch app.
-    npm run start
+Import the repo in Vercel. It detects Vite automatically (build: `npm run build`, output: `dist`).
+`api/jisho.js` deploys as a serverless function that proxies jisho.org for the "jisho" word source.

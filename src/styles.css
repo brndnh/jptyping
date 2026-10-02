@@ -1,0 +1,324 @@
+:root {
+    --bg: #0f1115;
+    --card: #161b22;
+    --card-deep: #0d1117;
+    --text: #c9d1d9;
+    --text-strong: #e6edf3;
+    --subtext: #8b98a9;
+    --furigana: #a7b1c2;
+    --accent: #22c55e;
+    --border: #2a2f3a;
+
+    --word-gap: 32px;
+    --display: 40px;
+
+    color-scheme: dark;
+}
+
+*,
+*::before,
+*::after {
+    box-sizing: border-box;
+}
+
+html,
+body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font-family: system-ui, -apple-system, 'Hiragino Sans', 'Noto Sans JP', 'Yu Gothic', Meiryo, sans-serif;
+    -webkit-font-smoothing: antialiased;
+    -webkit-tap-highlight-color: transparent;
+}
+
+button {
+    font: inherit;
+    color: inherit;
+    background: none;
+    cursor: pointer;
+}
+
+/* ---------- practice ---------- */
+
+.practice {
+    display: flex;
+    flex-direction: column;
+    min-height: 100dvh;
+    max-width: 960px;
+    margin: 0 auto;
+    padding: max(16px, env(safe-area-inset-top)) max(16px, env(safe-area-inset-right))
+        max(16px, env(safe-area-inset-bottom)) max(16px, env(safe-area-inset-left));
+}
+
+.top-bar {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding-bottom: 8px;
+}
+
+.top-label {
+    border: 0;
+    padding: 0;
+    color: var(--subtext);
+    font-size: 16px;
+    text-align: left;
+}
+
+.top-right {
+    text-align: right;
+}
+
+.wpm {
+    font-size: 20px;
+    font-variant-numeric: tabular-nums;
+}
+
+.meter {
+    margin-top: 4px;
+    color: var(--subtext);
+    font-size: 14px;
+    font-variant-numeric: tabular-nums;
+}
+
+.row {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 8px;
+    padding-bottom: 8px;
+}
+
+.row-divider {
+    width: 1px;
+    height: 20px;
+    background: var(--border);
+}
+
+.pill {
+    padding: 8px 12px;
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    font-size: 16px;
+}
+
+.pill-active {
+    border-color: var(--accent);
+}
+
+.hint {
+    color: var(--subtext);
+    font-size: 14px;
+}
+
+/* stage: sits high on phones so the on-screen keyboard doesn't cover it */
+.stage {
+    position: relative;
+    height: 200px;
+    margin: 24px 0;
+    overflow: hidden;
+    cursor: text;
+    mask-image: linear-gradient(to right, transparent, #000 15%, #000 85%, transparent);
+}
+
+@media (min-width: 768px) and (min-height: 600px) {
+    .stage {
+        flex: 1;
+        height: auto;
+        min-height: 240px;
+    }
+}
+
+.conveyor {
+    position: absolute;
+    top: 50%;
+    left: 0;
+    display: flex;
+    align-items: flex-end;
+    margin-top: -60px; /* roughly centers furigana + word */
+    transition: transform 200ms cubic-bezier(0.33, 1, 0.68, 1);
+    will-change: transform;
+}
+
+.word-block {
+    position: relative;
+    flex-shrink: 0;
+    margin-right: var(--word-gap);
+}
+
+.furigana-word {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    margin: 0 8px;
+    opacity: 0.5;
+    white-space: nowrap;
+}
+
+.furigana-word.active {
+    opacity: 1;
+}
+
+.furigana {
+    min-height: 24px;
+    font-size: calc(var(--display) * 0.5);
+    line-height: 24px;
+    color: var(--furigana);
+}
+
+.furigana-matched {
+    color: var(--accent);
+}
+
+.surface {
+    font-size: var(--display);
+    line-height: calc(var(--display) + 6px);
+    font-weight: 500;
+}
+
+.furigana-word.active .surface {
+    color: var(--text-strong);
+    font-weight: 700;
+}
+
+/* hangs below the active word without changing its measured width */
+.word-below {
+    position: absolute;
+    top: 100%;
+    left: 50%;
+    transform: translateX(-50%);
+    text-align: center;
+    white-space: nowrap;
+}
+
+.romaji {
+    margin-top: 6px;
+    color: var(--subtext);
+    font-size: 16px;
+}
+
+.typed-kana {
+    margin-top: 10px;
+    min-height: 24px;
+    font-size: 20px;
+    color: var(--accent);
+}
+
+.focus-hint {
+    position: absolute;
+    bottom: 8px;
+    left: 0;
+    right: 0;
+    text-align: center;
+    color: var(--subtext);
+    font-size: 14px;
+    pointer-events: none;
+}
+
+/* focusable (so mobile keyboards open) but invisible; 16px avoids iOS zoom-on-focus */
+.hidden-input {
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    border: 0;
+    opacity: 0;
+    font-size: 16px;
+    caret-color: transparent;
+}
+
+.bottom-bar {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: space-between;
+    align-items: center;
+    gap: 10px;
+}
+
+.bottom-toggles {
+    display: flex;
+    gap: 10px;
+}
+
+.button {
+    padding: 12px 16px;
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    font-size: 16px;
+}
+
+.button-filled {
+    border-color: transparent;
+    background: var(--border);
+    font-weight: 600;
+    padding: 12px 20px;
+}
+
+/* ---------- results ---------- */
+
+.results {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    min-height: 100dvh;
+    padding: 20px;
+}
+
+.results-card {
+    width: 100%;
+    max-width: 400px;
+    padding: 24px;
+    border-radius: 20px;
+    background: var(--card);
+    box-shadow: 0 4px 12px rgb(0 0 0 / 0.2);
+    text-align: center;
+}
+
+.results-wpm {
+    margin: 0;
+    font-size: 30px;
+    font-weight: 500;
+}
+
+.results-time {
+    margin: 6px 0 24px;
+    color: var(--subtext);
+    font-size: 16px;
+}
+
+.results-words {
+    width: 100%;
+    max-width: 400px;
+    margin-top: 32px;
+    padding: 16px;
+    border-radius: 12px;
+    background: var(--card-deep);
+}
+
+.results-words h2 {
+    margin: 0 0 12px;
+    color: var(--subtext);
+    font-size: 16px;
+    font-weight: 600;
+}
+
+.results-words ul {
+    margin: 0;
+    padding: 0;
+    list-style: none;
+}
+
+.results-words li {
+    margin-bottom: 4px;
+    opacity: 0.85;
+}
+
+@media (max-width: 420px) {
+    :root {
+        --display: 34px;
+        --word-gap: 24px;
+    }
+}

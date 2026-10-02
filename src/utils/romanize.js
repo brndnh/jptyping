@@ -106,6 +106,14 @@ export function romajiToHiragana(input) {
             continue;
         }
 
+        // --- Hepburn 'tch' => っち (matcha) ---
+        if (ch === 't' && ch2 === 'c' && ch3 === 'h') {
+            out += 'っ';
+            prevRaw = ch;
+            i += 1;
+            continue;
+        }
+
         // --- sokuon っ for double consonants (except 'nn') ---
         if (i + 1 < s.length && s[i] === s[i + 1] && !isVowel(ch) && ch !== 'n') {
             out += 'っ';
@@ -156,5 +164,42 @@ export function romajiToHiragana(input) {
         i += 1;
     }
 
+    return out;
+}
+
+// canonical (Hepburn) spellings for kana -> romaji, used for the romaji hint
+const HIRA_TO_ROMAJI = {};
+for (const [romaji, kana] of Object.entries(ROMAJI_TO_HIRA)) {
+    // first spelling wins (shi before si, chi before ti, ...)
+    if (!(kana in HIRA_TO_ROMAJI) && /^[a-z]+$/.test(romaji)) HIRA_TO_ROMAJI[kana] = romaji;
+}
+HIRA_TO_ROMAJI['ん'] = 'n';
+HIRA_TO_ROMAJI['じ'] = 'ji'; // table lists zi first
+HIRA_TO_ROMAJI['ぢ'] = 'ji';
+HIRA_TO_ROMAJI['づ'] = 'zu';
+
+/**
+ * Convert hiragana -> romaji. Unknown chars pass through.
+ */
+export function hiraganaToRomaji(input) {
+    const s = input || '';
+    let out = '';
+    let geminate = false;
+
+    for (let i = 0; i < s.length; i++) {
+        if (s[i] === 'っ') { geminate = true; continue; }
+
+        const pair = HIRA_TO_ROMAJI[s.substr(i, 2)];
+        let r = pair ?? HIRA_TO_ROMAJI[s[i]] ?? s[i];
+        if (pair) i++;
+
+        if (geminate) {
+            r = r.startsWith('ch') ? 't' + r : r[0] + r;
+            geminate = false;
+        }
+        // ん before a vowel, y or n needs an apostrophe to stay unambiguous
+        if (out.endsWith('n') && s[i - (pair ? 2 : 1)] === 'ん' && /^[aiueoyn]/.test(r)) out += "'";
+        out += r;
+    }
     return out;
 }

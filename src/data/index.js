@@ -1,5 +1,7 @@
+import N5Set from './N5Set.json';
+
 export const SETS = {
-    mainSet: require('./N5Set.json'),
+    mainSet: N5Set,
 };
 
 export const DEFAULT_SET_ID = 'mainSet';
