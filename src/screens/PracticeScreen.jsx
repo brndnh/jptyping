@@ -1,303 +1,221 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
-import {
-    View,
-    Text,
-    TextInput,
-    Pressable,
-    Animated,
-    Easing,
-    KeyboardAvoidingView,
-    Platform,
-    StatusBar,
-    ActivityIndicator,
-    ScrollView,
-    StyleSheet,
-} from 'react-native';
-import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 
-import FuriganaWord from '../components/FuriganaWord';
-import { getSet, listSets, DEFAULT_SET_ID } from '../data';
-import { romajiToHiragana } from '../utils/romanize';
+import FuriganaWord from '../components/FuriganaWord.jsx';
+import { getSet, listSets } from '../data';
+import { romajiToHiragana, hiraganaToRomaji, normalizeKana, canStillMatch } from '../utils/romanize';
+import { getWeakWords, WEAK_MIN } from '../utils/progress';
 
-// layout
-const INTER_WORD_GAP = 32;
 // input guard
 const INPUT_LIMIT_MULTIPLIER = 4;
+// weak words: how many to drill
+const WEAK_POOL_SIZE = 30;
+// jisho: words taken from each fetched page
+const WORDS_PER_PAGE = 5;
+// readings we can type (katakana/ー can't be produced from romaji)
+const TYPEABLE_READING = /^[ぁ-ゖ]+$/;
 
-// design tokens
-const COLORS = {
-    bg: '#0f1115',
-    text: '#c9d1d9',
-    subtext: '#8b98a9',
-    accent: '#22c55e',
-    border: '#2a2f3a',
-};
+const KANA_BUCKETS = ['あ', 'い', 'う', 'え', 'お', 'か', 'き', 'く', 'け', 'こ', 'さ', 'し', 'す', 'せ', 'そ', 'た', 'ち', 'つ', 'て', 'と', 'な', 'に', 'ぬ', 'ね', 'の', 'は', 'ひ', 'ふ', 'へ', 'ほ', 'ま', 'み', 'む', 'め', 'も', 'や', 'ゆ', 'よ', 'ら', 'り', 'る', 'れ', 'ろ', 'わ', 'を', 'ん'];
 
-const FONT_SIZES = {
-    xs: 12,
-    sm: 14,
-    md: 16,
-    lg: 20,
-    xl: 32,
-    display: 40, // main word size
-};
+const randomItem = (arr) => arr[Math.floor(Math.random() * arr.length)];
 
-// tiny jisho fetcher (random-ish) – returns [{ surface, reading }]
-async function fetchRandomJishoWords(count = 25) {
-    const buckets = ['あ', 'い', 'う', 'え', 'お', 'か', 'き', 'く', 'け', 'こ', 'さ', 'し', 'す', 'せ', 'そ', 'た', 'ち', 'つ', 'て', 'と', 'な', 'に', 'ぬ', 'ね', 'の', 'は', 'ひ', 'ふ', 'へ', 'ほ', 'ま', 'み', 'む', 'め', 'も', 'や', 'ゆ', 'よ', 'ら', 'り', 'る', 'れ', 'ろ', 'わ', 'を', 'ん'];
-    const out = [];
-    let guard = 0;
-
-    while (out.length < count && guard++ < count * 5) {
-        const q = buckets[Math.floor(Math.random() * buckets.length)];
-        const page = 1 + Math.floor(Math.random() * 5);
-        const url = `https://jisho.org/api/v1/search/words?keyword=${encodeURIComponent(q)}&page=${page}`;
-        try {
-            const res = await fetch(url);
-            const json = await res.json();
-            const arr = json?.data ?? [];
-            if (!arr.length) continue;
-            const pick = arr[Math.floor(Math.random() * arr.length)];
-            const jp = pick?.japanese?.[0] ?? {};
-            const surface = jp.word || jp.reading || '';
-            const reading = jp.reading || '';
-            if (!reading) continue;
-            out.push({ surface, reading, romaji: undefined });
-        } catch {
-            // ignore and continue
-        }
+function shuffle(items) {
+    const arr = [...items];
+    for (let i = arr.length - 1; i > 0; i--) {
+        const j = Math.floor(Math.random() * (i + 1));
+        [arr[i], arr[j]] = [arr[j], arr[i]];
     }
-    return out;
+    return arr;
 }
 
-export default function PracticeScreen({ navigation }) {
-    // safe area + keyboard offsets
-    const insets = useSafeAreaInsets();
-    const KAV_OFFSET = Platform.OS === 'ios' ? insets.top + 40 : (StatusBar.currentHeight || 0);
-    const EXTRA_BOTTOM_PAD = insets.bottom + -80; // keep content clear of tall keyboards
+// one random jisho page -> up to WORDS_PER_PAGE typeable words
+async function fetchJishoPage() {
+    const keyword = randomItem(KANA_BUCKETS);
+    const page = 1 + Math.floor(Math.random() * 5);
+    try {
+        const res = await fetch(`/api/jisho?keyword=${encodeURIComponent(keyword)}&page=${page}`);
+        const json = await res.json();
+        const words = (json?.data ?? [])
+            .map((entry) => entry?.japanese?.[0] ?? {})
+            .filter((jp) => jp.reading && TYPEABLE_READING.test(jp.reading))
+            .map((jp) => ({ surface: jp.word || jp.reading, reading: jp.reading, romaji: '' }));
+        return shuffle(words).slice(0, WORDS_PER_PAGE);
+    } catch {
+        return [];
+    }
+}
 
-    // test mode controls
-    const [testMode, setTestMode] = useState('words');
-    const [durationSec, setDurationSec] = useState(30);
-    const [wordTarget, setWordTarget] = useState(10);
+async function fetchRandomJishoWords(count = 25) {
+    const pages = await Promise.all(
+        Array.from({ length: Math.ceil(count / WORDS_PER_PAGE) + 1 }, fetchJishoPage)
+    );
+    const seen = new Set();
+    return pages
+        .flat()
+        .filter((w) => {
+            const key = `${w.surface}|${w.reading}`;
+            if (seen.has(key)) return false;
+            seen.add(key);
+            return true;
+        })
+        .slice(0, count);
+}
+
+// stored romaji when it actually types the reading, generated otherwise
+const romajiHint = (w) =>
+    w.romaji && romajiToHiragana(w.romaji, w.reading) === w.reading ? w.romaji : hiraganaToRomaji(w.reading);
+
+const THEME_LABELS = { auto: 'theme: auto', light: 'theme: light', dark: 'theme: dark' };
+const NEXT_THEME = { auto: 'light', light: 'dark', dark: 'auto' };
+
+// longest common prefix length
+const lcp = (a, b) => {
+    const n = Math.min(a.length, b.length);
+    let i = 0;
+    while (i < n && a[i] === b[i]) i++;
+    return i;
+};
+
+// buttons keep focus on the hidden input so the mobile keyboard stays open
+const keepFocus = (e) => e.preventDefault();
+
+const Pill = ({ active, onClick, children }) => (
+    <button
+        type="button"
+        className={`pill${active ? ' pill-active' : ''}`}
+        onMouseDown={keepFocus}
+        onClick={onClick}
+    >
+        {children}
+    </button>
+);
+
+const Button = ({ onClick, children }) => (
+    <button type="button" className="button" onMouseDown={keepFocus} onClick={onClick}>
+        {children}
+    </button>
+);
+
+export default function PracticeScreen({ settings, updateSettings, onFinish, onOpenStats }) {
+    const { testMode, durationSec, wordTarget, source, setId, showRomaji, showFurigana, theme } = settings;
 
     // data source
-    const [source, setSource] = useState('local'); // 'local' | 'jisho'
     const [remoteWords, setRemoteWords] = useState(null);
     const [loadingJisho, setLoadingJisho] = useState(false);
 
-    // ui toggles
-    const [showRomaji, setShowRomaji] = useState(false);
-    const [showFurigana, setShowFurigana] = useState(true);
-
-
     // dataset
-    const [setId, setSetId] = useState(DEFAULT_SET_ID);
     const lesson = useMemo(() => getSet(setId), [setId]);
+    const setsMeta = listSets();
 
     // shuffle seed
     const [seed, setSeed] = useState(0);
+
+    // weak words from saved progress (re-read on every reshuffle)
+    const weakWords = useMemo(
+        () => (source === 'weak'
+            ? getWeakWords(WEAK_POOL_SIZE).map((w) => ({ surface: w.s, reading: w.r, romaji: '' }))
+            : []),
+        [source, seed]
+    );
+    const hasWeakWords = weakWords.length >= WEAK_MIN;
 
     // pool
     const wordPool =
         source === 'jisho' && Array.isArray(remoteWords) && remoteWords.length
             ? remoteWords
-            : lesson.items;
+            : source === 'weak' && hasWeakWords
+                ? weakWords
+                : lesson.items;
 
     // words (shuffled)
-    const words = useMemo(() => {
-        const arr = [...wordPool];
-        for (let i = arr.length - 1; i > 0; i--) {
-            const j = Math.floor(Math.random() * (i + 1));
-            [arr[i], arr[j]] = [arr[j], arr[i]];
-        }
-        return arr;
-    }, [wordPool, seed]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    const words = useMemo(() => shuffle(wordPool), [wordPool, seed]);
 
     // session state
     const [wIndex, setWIndex] = useState(0);
     const [cIndex, setCIndex] = useState(0);
-    const [errors, setErrors] = useState(0);
     const [startTs, setStartTs] = useState(null);
     const [elapsed, setElapsed] = useState(0);
 
     // ime buffers
     const [raw, setRaw] = useState('');
     const [typedKana, setTypedKana] = useState('');
+    const composingRef = useRef(false);
+    // text that just completed a word; Safari can re-send it after compositionend
+    const committedRef = useRef(null);
+
+    // accuracy + per-word tracking (refs: they don't drive rendering)
+    const keysRef = useRef(0);
+    const wrongKeysRef = useRef(0);
+    const onTrackRef = useRef(true);
+    const wordMistakesRef = useRef(0);
+    const wordStartRef = useRef(null);
+    const wordResultsRef = useRef([]);
 
     // refs / timers
     const inputRef = useRef(null);
     const timerRef = useRef(null);
     const endTsRef = useRef(null);
+    const [focused, setFocused] = useState(false);
 
-    // viewport
-    const [viewportW, setViewportW] = useState(0);
-
-    // conveyor offset
-    const scrollX = useRef(new Animated.Value(0)).current;
+    // conveyor
+    const stageRef = useRef(null);
+    const wordRefs = useRef([]);
+    const [offset, setOffset] = useState(0);
 
     // current word
     const currentWord = words[wIndex] ?? words[0];
     const currentTarget = currentWord?.reading || '';
 
-    // measurement
-    const wordTotalWidths = useRef({});
-    const [layoutTick, setLayoutTick] = useState(0);
+    const focusInput = () => inputRef.current?.focus({ preventScroll: true });
 
-    const onMeasureWord = (i, width) => {
-        if (wordTotalWidths.current[i] == null) {
-            wordTotalWidths.current[i] = width;
-            setLayoutTick((t) => t + 1);
-        }
-    };
+    // center the active word in the stage
+    const recenter = useCallback(() => {
+        const stage = stageRef.current;
+        const el = wordRefs.current[wIndex];
+        if (!stage || !el) return;
+        setOffset(Math.round(stage.clientWidth / 2 - (el.offsetLeft + el.offsetWidth / 2)));
+    }, [wIndex]);
 
-    const sumPrevWords = (idx) => {
-        let s = 0;
-        for (let k = 0; k < idx; k++) {
-            s += (wordTotalWidths.current[k] ?? 0);
-            s += INTER_WORD_GAP;
-        }
-        return s;
-    };
+    useLayoutEffect(recenter, [recenter, words, showFurigana]);
+
+    useEffect(() => {
+        const observer = new ResizeObserver(recenter);
+        observer.observe(stageRef.current);
+        // CJK fonts can load late and change word widths
+        document.fonts?.ready.then(recenter);
+        return () => observer.disconnect();
+    }, [recenter]);
 
     // focus & cleanup
     useEffect(() => {
-        const t = setTimeout(() => inputRef.current?.focus(), 300);
-        return () => clearTimeout(t);
+        focusInput();
+        return () => clearInterval(timerRef.current);
     }, []);
-    useEffect(() => () => timerRef.current && clearInterval(timerRef.current), []);
 
     // jisho prefetch
     useEffect(() => {
+        if (source !== 'jisho') return;
         let alive = true;
-        (async () => {
-            if (source !== 'jisho') return;
-            setLoadingJisho(true);
-            const need = Number.isFinite(wordTarget) ? wordTarget : 25;
-            const got = await fetchRandomJishoWords(Math.max(10, need));
-            if (alive) {
-                setRemoteWords(got);
-                setLoadingJisho(false);
-            }
-        })();
+        setLoadingJisho(true);
+        const need = Number.isFinite(wordTarget) ? wordTarget : 25;
+        fetchRandomJishoWords(Math.max(10, need)).then((got) => {
+            if (!alive) return;
+            setRemoteWords(got);
+            setLoadingJisho(false);
+        });
         return () => { alive = false; };
     }, [source, wordTarget, seed]);
-
-    // reset when dataset changes
-    useEffect(() => {
-        hardReset(false);
-        // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [setId]);
-
-    // timer tick
-    useEffect(() => {
-        if (!startTs) return;
-        timerRef.current = setInterval(() => {
-            const now = Date.now();
-            setElapsed(now - startTs);
-            if (testMode === 'time' && endTsRef.current && now >= endTsRef.current) {
-                finishRun();
-            }
-        }, 100);
-        return () => clearInterval(timerRef.current);
-    }, [startTs, testMode]);
 
     // stats
     const minutes = Math.max(0.001, elapsed / 60000);
     const grossCharsBeforeThisWord =
-        words.slice(0, wIndex).reduce((acc, w) => acc + [...(w.reading || '')].length + 1, 0);
+        words.slice(0, wIndex).reduce((acc, w) => acc + [...(w.reading || '')].length + 1 /* gap */, 0);
     const grossChars = grossCharsBeforeThisWord + cIndex;
     const wpm = Math.round((grossChars / 5) / minutes);
 
-    // lcp
-    const lcp = (a, b) => {
-        const n = Math.min(a.length, b.length);
-        let i = 0;
-        while (i < n && a[i] === b[i]) i++;
-        return i;
-    };
-
-    // animator (centering)
-    const animateToOffset = (px, animated = true) => {
-        if (!animated) { scrollX.setValue(px); return; }
-        Animated.timing(scrollX, {
-            toValue: px,
-            duration: 200,
-            easing: Easing.out(Easing.cubic),
-            useNativeDriver: true,
-        }).start();
-    };
-
-    // center the active word
-    const leftOf = (i) => sumPrevWords(i);
-    const computeCenterOffset = (idx) => {
-        const w = wordTotalWidths.current[idx] ?? 0;
-        const left = leftOf(idx);
-        const centerX = left + w / 2;
-        return Math.round((viewportW / 2) - centerX);
-    };
-
-    useEffect(() => {
-        if (viewportW === 0) return;
-        if (wordTotalWidths.current[wIndex] == null) return;
-        animateToOffset(computeCenterOffset(wIndex), true);
-    }, [viewportW, layoutTick, wIndex]); // eslint-disable-line
-
-    // input handler with per-word cap
-    const onChange = (text) => {
-        if (!startTs && text.length > 0) {
-            const now = Date.now();
-            setStartTs(now);
-            endTsRef.current = testMode === 'time' ? now + durationSec * 1000 : null;
-        }
-
-        const targetLen = currentTarget.length || 0;
-        const maxRaw = Math.max(1, targetLen * INPUT_LIMIT_MULTIPLIER);
-        if (text.length > maxRaw) text = text.slice(0, maxRaw);
-
-        setRaw(text);
-
-        const kana = romajiToHiragana(text);
-        setTypedKana(kana);
-
-        const prev = cIndex;
-        const matched = lcp(kana, currentTarget);
-        setCIndex(matched);
-
-        if (text.length > raw.length && matched <= prev && kana.length >= prev) {
-            setErrors((e) => e + 1);
-        }
-
-        if (kana === currentTarget && currentTarget.length > 0) {
-            setRaw('');
-            setTypedKana('');
-            setCIndex(0);
-
-            if (testMode === 'words') {
-                const targetCount = Number.isFinite(wordTarget) ? wordTarget : Infinity;
-                if (wIndex + 1 >= targetCount || wIndex + 1 >= words.length) {
-                    finishRun();
-                    return;
-                }
-            }
-
-            if (wIndex < words.length - 1) setWIndex(wIndex + 1);
-            else { finishRun(); return; }
-
-            setTimeout(() => inputRef.current?.focus(), 0);
-        }
-    };
-
-    // helper: gross chars typed up to "now" (completed words + current match)
-    const grossCharsUpToNow = () => {
-        const before = words.slice(0, wIndex)
-            .reduce((acc, w) => acc + [...(w.reading || '')].length + 1 /* gap */, 0);
-        return before + cIndex;
-    };
-
-    // finish run
-    const finishRun = () => {
-        if (timerRef.current) clearInterval(timerRef.current);
+    // finish run; partialChars = correctly typed chars of the unfinished word
+    const finishRun = (partialChars = cIndex) => {
+        clearInterval(timerRef.current);
 
         // compute precise elapsed for final wpm (don't rely on state that may be stale)
         const finalMs =
@@ -307,30 +225,115 @@ export default function PracticeScreen({ navigation }) {
 
         // clamp to at least 1s to avoid insane spikes from ~0 minutes
         const finalMinutes = Math.max(1 / 60, finalMs / 60000);
-        const finalGross = grossCharsUpToNow();
+        const completed = wordResultsRef.current;
+        const finalGross = completed.reduce((acc, w) => acc + [...w.reading].length + 1 /* gap */, 0) + partialChars;
         const wpmFinal = Math.round((finalGross / 5) / finalMinutes);
+        const keys = keysRef.current;
 
-        const seconds = Math.floor(finalMs / 1000);
-
-        const payload = {
+        onFinish({
             mode: testMode,
             source,
+            setId: lesson.id,
             durationSec: testMode === 'time' ? durationSec : undefined,
             targetWords: testMode === 'words'
                 ? (Number.isFinite(wordTarget) ? wordTarget : 'unlimited')
                 : undefined,
             wpm: wpmFinal,
-            timeSec: seconds,
+            accuracy: keys ? Math.round((100 * (keys - wrongKeysRef.current)) / keys) : null,
+            timeSec: Math.floor(finalMs / 1000),
             words: words.map(({ surface, reading }) => ({ surface, reading })),
-            completedWords: wIndex + (typedKana === currentTarget && currentTarget ? 1 : 0),
-        };
+            completedWords: completed.length,
+            wordResults: completed,
+        });
+    };
 
-        navigation?.replace?.('Results', payload);
+    // the interval outlives renders, so it calls the latest finishRun through a ref
+    const finishRef = useRef(finishRun);
+    finishRef.current = finishRun;
+
+    // timer tick
+    useEffect(() => {
+        if (!startTs) return;
+        timerRef.current = setInterval(() => {
+            const now = Date.now();
+            setElapsed(now - startTs);
+            if (testMode === 'time' && endTsRef.current && now >= endTsRef.current) {
+                finishRef.current();
+            }
+        }, 100);
+        return () => clearInterval(timerRef.current);
+    }, [startTs, testMode]);
+
+    // still heading toward the target (reading, or the written form via an IME)?
+    const isOnTrack = (text) =>
+        currentWord?.surface.startsWith(text.trim()) || canStillMatch(text, currentTarget);
+
+    // input handler with per-word cap; committed = an IME composition was just confirmed
+    const handleText = (text, committed = false) => {
+        if (!startTs && text.length > 0) {
+            const now = Date.now();
+            setStartTs(now);
+            endTsRef.current = testMode === 'time' ? now + durationSec * 1000 : null;
+            wordStartRef.current = now;
+        }
+
+        // never trim mid-composition, it breaks the IME
+        const maxRaw = Math.max(1, currentTarget.length * INPUT_LIMIT_MULTIPLIER);
+        if (!composingRef.current && text.length > maxRaw) text = text.slice(0, maxRaw);
+
+        setRaw(text);
+
+        const kana = romajiToHiragana(text, currentTarget);
+        setTypedKana(kana);
+
+        // keystroke accuracy; mid-composition text is the IME's business, not a keystroke
+        if (!composingRef.current) {
+            const onTrack = isOnTrack(text);
+            if (committed || text.length > raw.length) {
+                keysRef.current += 1;
+                if (!onTrack) {
+                    wrongKeysRef.current += 1;
+                    if (onTrackRef.current) wordMistakesRef.current += 1;
+                }
+            }
+            onTrackRef.current = onTrack;
+        }
+
+        // either the reading (romaji/kana) or the written form (IME converted to kanji) completes the word
+        const typedSurface = text.trim() === currentWord?.surface;
+        const typedReading = normalizeKana(kana) === normalizeKana(currentTarget);
+        setCIndex(typedSurface ? currentTarget.length : lcp(normalizeKana(kana), normalizeKana(currentTarget)));
+
+        // kana IMEs: wait for the composition to be committed before advancing
+        if (!(typedSurface || typedReading) || !currentTarget || composingRef.current) return;
+
+        committedRef.current = text;
+        setRaw('');
+        setTypedKana('');
+        setCIndex(0);
+
+        const now = Date.now();
+        wordResultsRef.current.push({
+            surface: currentWord.surface,
+            reading: currentWord.reading,
+            ms: now - (wordStartRef.current ?? now),
+            mistakes: wordMistakesRef.current,
+        });
+        wordStartRef.current = now;
+        wordMistakesRef.current = 0;
+        onTrackRef.current = true;
+
+        const targetCount = testMode === 'words' && Number.isFinite(wordTarget) ? wordTarget : Infinity;
+        if (wIndex + 1 >= targetCount || wIndex + 1 >= words.length) {
+            finishRun(0);
+            return;
+        }
+        setWIndex(wIndex + 1);
     };
 
     // reset session
     const hardReset = (reshuffle = true) => {
-        if (timerRef.current) clearInterval(timerRef.current);
+        clearInterval(timerRef.current);
         endTsRef.current = null;
 
         if (reshuffle) setSeed((s) => s + 1);
@@ -338,330 +341,206 @@ export default function PracticeScreen({ navigation }) {
         setCIndex(0);
         setRaw('');
         setTypedKana('');
-        setErrors(0);
         setStartTs(null);
         setElapsed(0);
-        wordTotalWidths.current = {};
-        setLayoutTick((t) => t + 1);
-        scrollX.setValue(0);
-        setTimeout(() => {
-            inputRef.current?.clear?.();
-            inputRef.current?.focus?.();
-        }, 200);
+        keysRef.current = 0;
+        wrongKeysRef.current = 0;
+        onTrackRef.current = true;
+        wordMistakesRef.current = 0;
+        wordStartRef.current = null;
+        wordResultsRef.current = [];
+        focusInput();
     };
 
-    // cycle sets
-    const setsMeta = listSets();
-    const cycleSet = () => {
-        const i = setsMeta.findIndex((s) => s.id === setId);
-        const next = setsMeta[(i + 1) % setsMeta.length]?.id || DEFAULT_SET_ID;
-        setSetId(next);
+    // settings changes restart the run
+    const changeSetting = (patch, reshuffle = false) => {
+        hardReset(reshuffle);
+        updateSettings(patch);
     };
 
-    // pill
-    const Pill = ({ active, onPress, children }) => (
-        <Pressable
-            onPress={onPress}
-            style={[styles.pill, active && styles.pillActive]}
-        >
-            <Text style={styles.pillText}>{children}</Text>
-        </Pressable>
-    );
+    // esc restarts
+    const hardResetRef = useRef(hardReset);
+    hardResetRef.current = hardReset;
+    useEffect(() => {
+        const onKey = (e) => {
+            if (e.key === 'Escape' && !e.isComposing) hardResetRef.current(true);
+        };
+        window.addEventListener('keydown', onKey);
+        return () => window.removeEventListener('keydown', onKey);
+    }, []);
 
     // ui readouts
     const remainingSec =
-        testMode === 'time'
-            ? Math.max(0, Math.ceil(((endTsRef.current ?? 0) - Date.now()) / 1000))
-            : null;
+        testMode === 'time' && endTsRef.current
+            ? Math.max(0, Math.ceil((endTsRef.current - Date.now()) / 1000))
+            : durationSec;
 
     const wordsProgress =
-        testMode === 'words'
-            ? `${Math.min(wIndex + 1, Number.isFinite(wordTarget) ? wordTarget : wIndex + 1)} / ${Number.isFinite(wordTarget) ? wordTarget : '∞'}`
-            : null;
+        `${Math.min(wIndex + 1, Number.isFinite(wordTarget) ? wordTarget : wIndex + 1)} / ${Number.isFinite(wordTarget) ? wordTarget : '∞'}`;
 
     return (
-        <KeyboardAvoidingView
-            style={styles.container}
-            behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
-            keyboardVerticalOffset={KAV_OFFSET}
-        >
-            <ScrollView
-                contentContainerStyle={[styles.scrollContent, { paddingBottom: EXTRA_BOTTOM_PAD }]}
-                keyboardShouldPersistTaps="handled"
-            >
-                <Pressable style={styles.flex} onPress={() => inputRef.current?.focus()}>
-                    {/* top bar */}
-                    <View style={styles.topBar}>
-                        <Pressable onPress={cycleSet}>
-                            <Text style={styles.topLabel}>
-                                {lesson.label} 
-                                {/* • {showRomaji ? 'romaji aid' : 'hiragana/kanji'} */}
-                            </Text>
-                        </Pressable>
+        <main className="practice" onClick={focusInput}>
+            {/* top bar */}
+            <header className="top-bar">
+                <div className="top-label">
+                    {source === 'jisho' ? 'jisho (random words)' : source === 'weak' && hasWeakWords ? 'your weak words' : lesson.label}
+                </div>
 
-                        <View style={styles.topRight}>
-                            <Text style={styles.wpm}>wpm {isFinite(wpm) ? wpm : 0}</Text>
-                            <Text style={styles.meter}>
-                                {testMode === 'time'
-                                    ? `⏱ ${remainingSec ?? Math.floor((elapsed || 0) / 1000)}s`
-                                    : `${wordsProgress}`}
-                            </Text>
-                        </View>
-                    </View>
+                <div className="top-right">
+                    <div className="wpm">wpm {isFinite(wpm) ? wpm : 0}</div>
+                    <div className="meter">
+                        {testMode === 'time' ? `⏱ ${remainingSec}s` : wordsProgress}
+                    </div>
+                </div>
+            </header>
 
-                    {/* quick mode controls (row 1) */}
-                    <View style={styles.rowControls}>
-                        <Pill active={testMode === 'time'} onPress={() => { if (testMode !== 'time') { hardReset(false); setTestMode('time'); } }}>time</Pill>
-                        <Pill active={testMode === 'words'} onPress={() => { if (testMode !== 'words') { hardReset(false); setTestMode('words'); } }}>words</Pill>
+            {/* quick mode controls (row 1) */}
+            <div className="row">
+                <Pill active={testMode === 'time'} onClick={() => testMode !== 'time' && changeSetting({ testMode: 'time' })}>time</Pill>
+                <Pill active={testMode === 'words'} onClick={() => testMode !== 'words' && changeSetting({ testMode: 'words' })}>words</Pill>
 
-                        {testMode === 'time' ? (
-                            <View style={styles.inlineRow}>
-                                <Pill active={durationSec === 15} onPress={() => { hardReset(false); setDurationSec(15); }}>15s</Pill>
-                                <Pill active={durationSec === 30} onPress={() => { hardReset(false); setDurationSec(30); }}>30s</Pill>
-                            </View>
-                        ) : (
-                            <View style={styles.inlineRow}>
-                                <Pill active={wordTarget === 10} onPress={() => { hardReset(false); setWordTarget(10); }}>10</Pill>
-                                <Pill active={wordTarget === 25} onPress={() => { hardReset(false); setWordTarget(25); }}>25</Pill>
-                                <Pill active={wordTarget === 50} onPress={() => { hardReset(false); setWordTarget(50); }}>50</Pill>
-                                <Pill active={!Number.isFinite(wordTarget)} onPress={() => { hardReset(false); setWordTarget(Infinity); }}>∞</Pill>
-                            </View>
-                        )}
-                    </View>
+                <span className="row-divider" />
 
-                    {/* source picker + jisho indicator (row 2) */}
-                    <View style={styles.rowSource}>
-                        <Pill active={source === 'local'} onPress={() => { setSource('local'); hardReset(false); }}>local</Pill>
-                        <Pill active={source === 'jisho'} onPress={() => { setSource('jisho'); hardReset(true); }}>jisho</Pill>
+                {testMode === 'time' ? (
+                    <>
+                        <Pill active={durationSec === 15} onClick={() => changeSetting({ durationSec: 15 })}>15s</Pill>
+                        <Pill active={durationSec === 30} onClick={() => changeSetting({ durationSec: 30 })}>30s</Pill>
+                    </>
+                ) : (
+                    <>
+                        <Pill active={wordTarget === 10} onClick={() => changeSetting({ wordTarget: 10 })}>10</Pill>
+                        <Pill active={wordTarget === 25} onClick={() => changeSetting({ wordTarget: 25 })}>25</Pill>
+                        <Pill active={wordTarget === 50} onClick={() => changeSetting({ wordTarget: 50 })}>50</Pill>
+                        <Pill active={!Number.isFinite(wordTarget)} onClick={() => changeSetting({ wordTarget: Infinity })}>∞</Pill>
+                    </>
+                )}
+            </div>
 
-                        {source === 'jisho' && (
-                            <View style={styles.inlineRow}>
-                                {loadingJisho ? (
-                                    <>
-                                        <ActivityIndicator size="small" />
-                                        <Text style={styles.hint}>fetching words…</Text>
-                                    </>
-                                ) : (
-                                    <Text style={styles.hint}>
-                                        {Array.isArray(remoteWords) && remoteWords.length
-                                            ? `${remoteWords.length} loaded`
-                                            : 'no results, using local fallback'}
-                                    </Text>
-                                )}
-                            </View>
-                        )}
-                    </View>
-
-                    {/* center area + conveyor (active word centered) */}
-                    <View
-                        style={styles.centerArea}
-                        onLayout={(e) => setViewportW(e.nativeEvent.layout.width)}
+            {/* source picker + jisho indicator (row 2) */}
+            <div className="row">
+                {setsMeta.map((set) => (
+                    <Pill
+                        key={set.id}
+                        active={source === 'local' && lesson.id === set.id}
+                        onClick={() => changeSetting({ source: 'local', setId: set.id }, true)}
                     >
-                        <Animated.View
-                            style={[
-                                styles.conveyor,
-                                { opacity: source === 'jisho' && loadingJisho ? 0.5 : 1, transform: [{ translateX: scrollX }] },
-                            ]}
-                        >
-                            {words.map((w, i) => {
-                                const isActive = i === wIndex;
-                                return (
-                                    <View
-                                        key={`${w.surface}-${i}`}
-                                        onLayout={(e) => onMeasureWord(i, e.nativeEvent.layout.width)}
-                                        style={styles.wordBlock}
-                                    >
-                                        <FuriganaWord
-                                            surface={w.surface}
-                                            reading={showFurigana ? w.reading : ''}
-                                            active={isActive}
-                                            fontSize={FONT_SIZES.display}
-                                        />
+                        {set.id}
+                    </Pill>
+                ))}
 
+                <span className="row-divider" />
 
-                                        {isActive && showRomaji && (
-                                            <Text style={styles.romaji}>{w.romaji}</Text>
-                                        )}
+                <Pill active={source === 'jisho'} onClick={() => changeSetting({ source: 'jisho' }, true)}>jisho</Pill>
+                <Pill active={source === 'weak'} onClick={() => changeSetting({ source: 'weak' }, true)}>weak</Pill>
 
-                                        {isActive && (
-                                            <Text style={styles.typedKana}>{typedKana}</Text>
-                                        )}
-                                    </View>
-                                );
-                            })}
-                        </Animated.View>
-                    </View>
+                {source === 'weak' && (
+                    <span className="hint">
+                        {hasWeakWords ? `${weakWords.length} words` : `not enough history yet, using ${lesson.id}`}
+                    </span>
+                )}
 
-                    {/* hidden input (romaji) */}
-                    <TextInput
-                        autoFocus
-                        ref={inputRef}
-                        value={raw}
-                        onChangeText={onChange}
-                        autoCorrect={false}
-                        autoCapitalize="none"
-                        keyboardType="default"
-                        style={styles.hiddenInput}
-                        blurOnSubmit={false}
-                    />
+                {source === 'jisho' && (
+                    <span className="hint">
+                        {loadingJisho
+                            ? 'fetching words…'
+                            : Array.isArray(remoteWords) && remoteWords.length
+                                ? `${remoteWords.length} loaded`
+                                : 'no results, using local fallback'}
+                    </span>
+                )}
+            </div>
 
-                    {/* bottom controls */}
-                    <View style={[styles.bottomBar, { paddingBottom: -20 + insets.bottom }]}>
-                        <Pressable onPress={() => hardReset(true)} style={styles.button}>
-                            <Text style={styles.buttonText}>restart</Text>
-                        </Pressable>
-
-                        <View style={{ flexDirection: 'row' }}>
-                            <Pressable onPress={() => setShowRomaji((s) => !s)} style={styles.button}>
-                                <Text style={styles.buttonText}>{showRomaji ? 'romaji: on' : 'romaji: off'}</Text>
-                            </Pressable>
-                            <Pressable
-                                onPress={() => setShowFurigana((s) => !s)}
-                                style={[styles.button, { marginLeft: 10 }]}  // small gap, preserves overall spacing
+            {/* stage + conveyor (active word centered) */}
+            <div className="stage" ref={stageRef}>
+                <div
+                    className="conveyor"
+                    style={{
+                        opacity: source === 'jisho' && loadingJisho ? 0.5 : 1,
+                        transform: `translateX(${offset}px)`,
+                        // jumping back to the first word (reset) shouldn't animate
+                        transition: wIndex === 0 ? 'none' : undefined,
+                    }}
+                >
+                    {words.map((w, i) => {
+                        const isActive = i === wIndex;
+                        return (
+                            <div
+                                key={`${w.surface}-${i}`}
+                                ref={(el) => { wordRefs.current[i] = el; }}
+                                className="word-block"
                             >
-                                <Text style={styles.buttonText}>{showFurigana ? 'furigana: on' : 'furigana: off'}</Text>
-                            </Pressable>
-                        </View>
-                    </View>
+                                <FuriganaWord
+                                    surface={w.surface}
+                                    reading={showFurigana ? w.reading : ''}
+                                    matched={isActive ? cIndex : 0}
+                                    active={isActive}
+                                />
 
-                </Pressable>
-            </ScrollView>
-        </KeyboardAvoidingView>
+                                {isActive && (
+                                    <div className="word-below">
+                                        {showRomaji && (
+                                            <div className="romaji">{romajiHint(w)}</div>
+                                        )}
+                                        <div className="typed-kana">{typedKana}</div>
+                                    </div>
+                                )}
+                            </div>
+                        );
+                    })}
+                </div>
+
+                {!focused && <div className="focus-hint">tap here to start typing</div>}
+            </div>
+
+            {/* hidden input (romaji or kana) */}
+            <input
+                ref={inputRef}
+                className="hidden-input"
+                value={raw}
+                onChange={(e) => {
+                    const text = e.target.value;
+                    if (text === committedRef.current) {
+                        committedRef.current = null;
+                        setRaw('');
+                        return;
+                    }
+                    committedRef.current = null;
+                    handleText(text);
+                }}
+                onCompositionStart={() => { composingRef.current = true; }}
+                onCompositionEnd={(e) => {
+                    composingRef.current = false;
+                    handleText(e.currentTarget.value, true);
+                }}
+                onFocus={() => setFocused(true)}
+                onBlur={() => setFocused(false)}
+                autoComplete="off"
+                autoCorrect="off"
+                autoCapitalize="off"
+                spellCheck={false}
+                enterKeyHint="next"
+                aria-label="type the reading"
+            />
+
+            {/* bottom controls */}
+            <footer className="bottom-bar">
+                <div className="bottom-actions">
+                    <Button onClick={() => hardReset(true)}>restart</Button>
+                    <Button onClick={onOpenStats}>stats</Button>
+                </div>
+
+                <div className="bottom-toggles">
+                    <Button onClick={() => updateSettings({ showRomaji: !showRomaji })}>
+                        {showRomaji ? 'romaji: on' : 'romaji: off'}
+                    </Button>
+                    <Button onClick={() => updateSettings({ showFurigana: !showFurigana })}>
+                        {showFurigana ? 'furigana: on' : 'furigana: off'}
+                    </Button>
+                    <Button onClick={() => updateSettings({ theme: NEXT_THEME[theme] ?? 'auto' })}>
+                        {THEME_LABELS[theme] ?? THEME_LABELS.auto}
+                    </Button>
+                </div>
+            </footer>
+        </main>
     );
 }
-
-const styles = StyleSheet.create({
-    container: {
-        flex: 1,
-        backgroundColor: COLORS.bg,
-    },
-    scrollContent: {
-        flexGrow: 1,
-    },
-    flex: {
-        flex: 1,
-    },
-
-    // top bar
-    topBar: {
-        paddingHorizontal: 16,
-        paddingTop: 16,
-        paddingBottom: 8,
-        flexDirection: 'row',
-        justifyContent: 'space-between',
-        alignItems: 'center',
-    },
-    topLabel: {
-        color: COLORS.subtext,
-        fontSize: FONT_SIZES.md,
-    },
-    topRight: {
-        alignItems: 'flex-end',
-    },
-    wpm: {
-        color: COLORS.text,
-        fontSize: FONT_SIZES.lg,
-    },
-    meter: {
-        color: COLORS.subtext,
-        fontSize: FONT_SIZES.sm,
-        marginTop: 4,
-    },
-
-    // controls rows
-    rowControls: {
-        paddingHorizontal: 16,
-        paddingBottom: 6,
-        flexDirection: 'row',
-        alignItems: 'center',
-        flexWrap: 'wrap',
-    },
-    rowSource: {
-        paddingHorizontal: 16,
-        paddingBottom: 10,
-        flexDirection: 'row',
-        alignItems: 'center',
-    },
-    inlineRow: {
-        flexDirection: 'row',
-        marginLeft: 8,
-        alignItems: 'center',
-    },
-
-    // pill
-    pill: {
-        paddingVertical: 8,
-        paddingHorizontal: 12,
-        borderRadius: 999,
-        borderWidth: 1,
-        borderColor: COLORS.border,
-        marginRight: 8,
-    },
-    pillActive: {
-        borderColor: COLORS.accent,
-    },
-    pillText: {
-        color: COLORS.text,
-        fontSize: FONT_SIZES.md,
-    },
-
-    // hints / helper text
-    hint: {
-        color: COLORS.subtext,
-        fontSize: FONT_SIZES.sm,
-        marginLeft: 8,
-    },
-
-    // center + conveyor
-    centerArea: {
-        flex: 1,
-        justifyContent: 'center',
-    },
-    conveyor: {
-        flexDirection: 'row',
-        alignItems: 'flex-end',
-    },
-    wordBlock: {
-        flexDirection: 'column',
-        alignItems: 'center',
-        marginRight: INTER_WORD_GAP,
-    },
-    romaji: {
-        marginTop: 6,
-        color: COLORS.subtext,
-        fontSize: FONT_SIZES.md,
-    },
-    typedKana: {
-        marginTop: 10,
-        fontSize: FONT_SIZES.lg,
-        color: COLORS.accent,
-    },
-
-    // hidden input
-    hiddenInput: {
-        height: 0,
-        width: 0,
-        opacity: 0,
-        position: 'absolute',
-    },
-
-    // bottom controls
-    bottomBar: {
-        paddingHorizontal: 16,
-        paddingTop: 8,
-        flexDirection: 'row',
-        justifyContent: 'space-between',
-        alignItems: 'center',
-    },
-    button: {
-        paddingVertical: 12,
-        paddingHorizontal: 16,
-        borderWidth: 1,
-        borderColor: COLORS.border,
-        borderRadius: 12,
-    },
-    buttonText: {
-        color: COLORS.text,
-        fontSize: FONT_SIZES.md,
-    },
-});

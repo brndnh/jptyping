@@ -1,8 +1,15 @@
+import N5Set from './N5Set.json';
+import N4Set from './N4Set.json';
+import N3Set from './N3Set.json';
+
+// keyed by each set's id, easiest first
 export const SETS = {
-    mainSet: require('./N5Set.json'),
+    N5: N5Set,
+    N4: N4Set,
+    N3: N3Set,
 };
 
-export const DEFAULT_SET_ID = 'mainSet';
+export const DEFAULT_SET_ID = 'N5';
 
 export function listSets() {
     return Object.values(SETS).map(s => ({
