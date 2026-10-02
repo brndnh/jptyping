@@ -39,8 +39,11 @@ function saveProgress(data) {
     }
 }
 
-// which word pool a run used: a set id, 'jisho' or 'weak'
-export const runSetLabel = (results) => (results.source === 'local' ? results.setId : results.source);
+// which pool a run used: a set id ('N4'), its sentences ('N4 sentences'), 'jisho' or 'weak'
+export const runSetLabel = (results) =>
+    results.content === 'sentences'
+        ? `${results.setId} sentences`
+        : results.source === 'local' ? results.setId : results.source;
 
 const bestKey = (set, mode, n) => `${set}|${mode}|${n}`;
 

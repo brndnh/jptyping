@@ -90,6 +90,9 @@ const ROMAJI_TO_HIRA = {
     la: 'ぁ', li: 'ぃ', lu: 'ぅ', le: 'ぇ', lo: 'ぉ',
     xya: 'ゃ', xyu: 'ゅ', xyo: 'ょ', lya: 'ゃ', lyu: 'ゅ', lyo: 'ょ',
     xtu: 'っ', ltu: 'っ',
+
+    // long vowel mark, as Japanese IMEs type it (コーヒー = ko-hi-)
+    '-': 'ー',
 };
 
 // helper
@@ -145,7 +148,7 @@ export function romajiToHiragana(input, target = '') {
         }
 
         // --- sokuon っ for double consonants (except 'nn') ---
-        if (i + 1 < s.length && s[i] === s[i + 1] && !isVowel(ch) && ch !== 'n') {
+        if (i + 1 < s.length && s[i] === s[i + 1] && /[a-z]/.test(ch) && !isVowel(ch) && ch !== 'n') {
             out += 'っ';
             prevRaw = s[i];
             i += 1;
@@ -207,6 +210,7 @@ HIRA_TO_ROMAJI['ん'] = 'n';
 HIRA_TO_ROMAJI['じ'] = 'ji'; // table lists zi first
 HIRA_TO_ROMAJI['ぢ'] = 'ji';
 HIRA_TO_ROMAJI['づ'] = 'zu';
+HIRA_TO_ROMAJI['ー'] = '-';
 
 /**
  * Convert hiragana -> romaji. Unknown chars pass through.

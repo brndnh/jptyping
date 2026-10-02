@@ -180,8 +180,35 @@ button {
 
 .word-block {
     position: relative;
+    display: flex;
+    align-items: flex-end;
     flex-shrink: 0;
     margin-right: var(--word-gap);
+}
+
+.word-block.joined {
+    margin-right: 0;
+}
+
+/* sentence punctuation: shown, never typed */
+.punct {
+    margin-left: -6px;
+    font-size: var(--display);
+    line-height: calc(var(--display) + 6px);
+    opacity: 0.5;
+}
+
+.punct.active {
+    opacity: 1;
+    color: var(--text-strong);
+}
+
+.translation {
+    margin: -8px 0 24px;
+    min-height: 1.4em;
+    text-align: center;
+    color: var(--subtext);
+    font-size: 16px;
 }
 
 .furigana-word {
@@ -577,6 +604,11 @@ button:disabled {
     :root {
         --display: 34px;
         --word-gap: 24px;
+    }
+
+    /* narrower edge fade so long sentence chunks stay readable */
+    .stage {
+        mask-image: linear-gradient(to right, transparent, #000 6%, #000 94%, transparent);
     }
 
     .bottom-toggles {

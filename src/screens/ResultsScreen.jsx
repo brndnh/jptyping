@@ -45,7 +45,7 @@ export default function ResultsScreen({ results, onBack, onOpenStats }) {
                     <ul>
                         {words.slice(0, 20).map((w, i) => (
                             <li key={i}>
-                                • {w.surface} ({w.reading})
+                                • {w.surface} ({w.note ?? w.reading})
                             </li>
                         ))}
                     </ul>

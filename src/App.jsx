@@ -12,6 +12,8 @@ const DEFAULT_SETTINGS = {
     testMode: 'words', // 'time' | 'words'
     durationSec: 30,
     wordTarget: 10, // Infinity = unlimited
+    sentenceTarget: 5,
+    content: 'words', // 'words' | 'sentences'
     source: 'local', // 'local' | 'jisho'
     setId: DEFAULT_SET_ID,
     showRomaji: false,
@@ -24,7 +26,13 @@ function loadSettings() {
         const saved = JSON.parse(localStorage.getItem(SETTINGS_KEY));
         if (!saved) return DEFAULT_SETTINGS;
         // Infinity serializes as null
-        return { ...DEFAULT_SETTINGS, ...saved, wordTarget: saved.wordTarget ?? Infinity };
+        const count = (value, fallback) => (value === null ? Infinity : value ?? fallback);
+        return {
+            ...DEFAULT_SETTINGS,
+            ...saved,
+            wordTarget: count(saved.wordTarget, DEFAULT_SETTINGS.wordTarget),
+            sentenceTarget: count(saved.sentenceTarget, DEFAULT_SETTINGS.sentenceTarget),
+        };
     } catch {
         return DEFAULT_SETTINGS;
     }
