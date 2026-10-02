@@ -62,6 +62,8 @@
 html,
 body {
     margin: 0;
+    /* the full-bleed word stage is 100vw wide, which includes any scrollbar */
+    overflow-x: clip;
     background: var(--bg);
     color: var(--text);
     font-family: system-ui, -apple-system, 'Hiragino Sans', 'Noto Sans JP', 'Yu Gothic', Meiryo, sans-serif;
@@ -167,6 +169,15 @@ button {
     }
 }
 
+/* tablet & desktop: the word line runs the full screen width, past the 960px controls column */
+@media (min-width: 768px) {
+    .stage {
+        width: 100vw;
+        margin-left: calc(50% - 50vw);
+        mask-image: linear-gradient(to right, transparent, #000 8%, #000 92%, transparent);
+    }
+}
+
 .conveyor {
     position: absolute;
     top: 50%;
@@ -235,6 +246,30 @@ button {
     color: var(--accent);
 }
 
+/* furigana off: keep the space, hide the reading; the current word reveals it on hover or tap */
+.furigana-word.concealed .furigana {
+    visibility: hidden;
+}
+
+.furigana-word.active.concealed {
+    cursor: help;
+}
+
+.furigana-word.concealed.revealed .furigana {
+    visibility: visible;
+}
+
+/* real pointers only: on touch screens :hover sticks after a tap */
+@media (hover: hover) {
+    .furigana-word.active.concealed:hover .furigana {
+        visibility: visible;
+    }
+}
+
+.word-hit {
+    display: flex;
+}
+
 .surface {
     font-size: var(--display);
     line-height: calc(var(--display) + 6px);
@@ -295,6 +330,8 @@ button {
 }
 
 .bottom-bar {
+    /* pinned to the bottom of the screen; on desktop the stage fills the space above it */
+    margin-top: auto;
     display: flex;
     flex-wrap: wrap;
     justify-content: space-between;
